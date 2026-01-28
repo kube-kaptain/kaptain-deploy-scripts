@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Validate container environment before deploy.
+# Checks required env vars, mounted paths, and runs plugin validators.
+set -euo pipefail
+
+log "Validating container up front..."
+
+failures=0
+mount_base="${MOUNT_BASE_PATH:-}"
+
+# Required environment variables
+if [[ -z "${DEPLOY_MODE:-}" ]]; then
+  notify-error "DEPLOY_MODE must be set"
+  failures=$((failures + 1))
+fi
+
+if [[ -z "${ENVIRONMENT:-}" ]]; then
+  notify-error "ENVIRONMENT must be set"
+  failures=$((failures + 1))
+fi
+
+if [[ -z "${VERSION:-}" ]]; then
+  notify-error "VERSION must be set"
+  failures=$((failures + 1))
+fi
+
+# Required mount paths
+if [[ ! -d "${mount_base}/secret" ]]; then
+  notify-error "Secret mount not found: ${mount_base}/secret"
+  failures=$((failures + 1))
+fi
+
+if [[ ! -d "${mount_base}/configmap" ]]; then
+  notify-error "ConfigMap mount not found: ${mount_base}/configmap"
+  failures=$((failures + 1))
+fi
+
+# Required secret file
+if [[ ! -f "${mount_base}/secret/environmentPassphrase" ]]; then
+  notify-error "environmentPassphrase not found in ${mount_base}/secret"
+  failures=$((failures + 1))
+fi
+
+# Run plugin validators
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+shopt -s nullglob
+for validator in "${script_dir}"/validate-container-*; do
+  if [[ ! -f "${validator}" ]]; then
+    notify-error "Container validation script '${validator}' is not a file!"
+    failures=$((failures + 1))
+  elif [[ ! -x "${validator}" ]]; then
+    notify-error "Container validation script '${validator}' is not executable!"
+    failures=$((failures + 1))
+  elif ! "${validator}"; then
+    failures=$((failures + 1))
+  fi
+done
+shopt -u nullglob
+
+# Report result
+if [[ ${failures} -eq 0 ]]; then
+  notify-info "Container validation passed - continuing"
+elif [[ ${failures} -eq 1 ]]; then
+  notify-error "Container validation failed with 1 error"
+  exit 44
+else
+  notify-error "Container validation failed with ${failures} errors"
+  exit 44
+fi

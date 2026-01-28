@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Copy deploy scripts into the Docker build context.
+set -euo pipefail
+
+OUTPUT_SUB_PATH="${OUTPUT_SUB_PATH:?OUTPUT_SUB_PATH is required!}"
+DEST="${DOCKER_SUBSTITUTED_SUB_PATH}/scripts"
+
+mkdir -p "${DEST}"
+cp -a "src/scripts/." "${DEST}/"
+
+file_count=$(find "${DEST}" -type f | wc -l | tr -d ' ')
+echo "Copied ${file_count} scripts to ${DEST}"
+echo
+echo "What's actually available? Do we have to guess?" 

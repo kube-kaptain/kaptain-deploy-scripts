@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Namespace-locked kubectl wrapper. The ${Environment} token is substituted
+# at build time so the namespace is hard-coded in the final image.
+# Logs each invocation to the audit directory before executing.
+set -euo pipefail
+
+AUDIT_DIR="/run/work/audit/kubectl"
+
+# Identify the calling script or shell
+caller="$(ps -o comm= -p $PPID 2>/dev/null || true)"
+[[ -z "${caller}" ]] && caller="FAILED_TO_GET_CALLER"
+
+# Timestamp that sorts correctly: YYYY-MM-DD_HH-MM-SS
+timestamp="$(date '+%Y-%m-%d_%H-%M-%S')"
+
+# Build the full command for logging
+full_cmd="kubectl -n ${Environment} $*"
+
+# Record the command to the audit directory
+echo "${full_cmd}" > "${AUDIT_DIR}/${timestamp}_${caller}"
+
+# Replace this process with kubectl
+exec kubectl -n "${Environment}" "$@"

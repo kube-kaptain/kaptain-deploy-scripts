@@ -1,0 +1,21 @@
+name: Docker Build Dockerfile
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    uses: kube-kaptain/buildon-github-actions/.github/workflows/docker-build-dockerfile.yaml@1.0.52
+    permissions:
+      contents: write
+      packages: write
+      checks: write
+    with:
+      dockerfile-squash: false # FROM scratch - no point.
+      qc-block-slash-containing-branches: true
+      qc-block-conventional-commits: true
+      hook-pre-tagging-tests-script-sub-path: bin/run-tests-all
+      hook-pre-docker-prepare-script-sub-path: bin/copy-scripts-for-docker

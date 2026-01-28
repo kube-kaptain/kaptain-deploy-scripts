@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Scan cluster workloads and extract OCI images.
+# Outputs unsorted and sorted unique lists.
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "Usage: oci-images <label>" >&2
+  exit 42
+fi
+
+label="$1"
+
+base="${RUN_BASE_PATH:-/run}"
+output_dir="${base}/work/oci-images"
+unsorted="${output_dir}/oci-images-${label}-unsorted"
+sorted="${output_dir}/oci-images-${label}-sorted"
+
+log "Scanning namespace for all oci images declared and in use..."
+
+mkdir -p "${output_dir}"
+
+# Workload types with pod templates (recursive descent handles varying nesting)
+workload_types=(
+  deployments
+  statefulsets
+  daemonsets
+  jobs
+  cronjobs
+)
+
+: > "${unsorted}"
+
+for workload in "${workload_types[@]}"; do
+  for image in $(k get "${workload}" -o jsonpath='{..spec.template.spec.containers..image}' 2>/dev/null || true); do
+    echo "${image}" >> "${unsorted}"
+  done
+  for image in $(k get "${workload}" -o jsonpath='{..spec.template.spec.initContainers..image}' 2>/dev/null || true); do
+    echo "${image}" >> "${unsorted}"
+  done
+  for image in $(k get "${workload}" -o jsonpath='{..spec.template.spec.ephemeralContainers..image}' 2>/dev/null || true); do
+    echo "${image}" >> "${unsorted}"
+  done
+done
+
+# ReplicaSets - only standalone ones (no ownerReferences, not managed by a deployment)
+for image in $(k get replicasets -o go-template='{{range .items}}{{if not .metadata.ownerReferences}}{{range .spec.template.spec.containers}}{{.image}} {{end}}{{range .spec.template.spec.initContainers}}{{.image}} {{end}}{{range .spec.template.spec.ephemeralContainers}}{{.image}} {{end}}{{end}}{{end}}' 2>/dev/null || true); do
+  echo "${image}" >> "${unsorted}"
+done
+
+# Pods
+for image in $(k get pods -o jsonpath='{..spec.containers..image}' 2>/dev/null || true); do
+  echo "${image}" >> "${unsorted}"
+done
+for image in $(k get pods -o jsonpath='{..spec.initContainers..image}' 2>/dev/null || true); do
+  echo "${image}" >> "${unsorted}"
+done
+for image in $(k get pods -o jsonpath='{..spec.ephemeralContainers..image}' 2>/dev/null || true); do
+  echo "${image}" >> "${unsorted}"
+done
+
+# Sort unique, removing empty lines
+if [[ -s "${unsorted}" ]]; then
+  sort -u "${unsorted}" | grep -v '^$' > "${sorted}"
+else
+  : > "${sorted}"
+fi
+
+log "Extracted $(wc -l < "${sorted}" | tr -d ' ') unique images to ${sorted}"

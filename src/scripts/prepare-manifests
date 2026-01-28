@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Prepare phase: copy manifests to writable work directory.
+set -euo pipefail
+
+base="${RUN_BASE_PATH:-/run}"
+source_dir="${base}/manifests"
+work_dir="${base}/work/manifests"
+
+if [[ ! -d "${source_dir}" ]]; then
+  notify-error "Manifests source directory does not exist: ${source_dir}"
+  exit 1
+fi
+
+if [[ ! -d "${work_dir}" ]]; then
+  notify-error "Manifests work directory does not exist: ${work_dir}"
+  exit 1
+fi
+
+log "Copying as-built manifests to the work dir for processing..."
+cp -a ${source_dir}/* "${work_dir}/"
+
+file_count=$(find "${work_dir}" -type f | wc -l)
+log "Copied ${file_count} manifest files to work directory"

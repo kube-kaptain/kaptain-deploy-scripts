@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Built-in echo provider for notify-info. Outputs to stdout with
+# timestamp and caller script name.
+# Format: 2026-01-25T14:32:15Z deploy: message
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: notify-info-echo <message>" >&2
+  echo "Error: message argument required" >&2
+  exit 42
+fi
+
+message="$*"
+timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+# Get grandparent process name (caller of our caller)
+grandparent_pid=$(ps -o ppid= -p $PPID 2>/dev/null | tr -d ' ')
+script_name=$(ps -o comm= -p "${grandparent_pid}" 2>/dev/null | tr -d ' ')
+script_name="${script_name:-UNKNOWN_CALLER}"
+
+echo "${timestamp} ${script_name}: ${message}"

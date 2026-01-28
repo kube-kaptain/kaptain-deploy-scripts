@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Local logging only. Outputs to container stdout without fanning out
+# to external notification providers. Use notify-info for external fanout.
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: log <message>" >&2
+  echo "Error: message argument required" >&2
+  exit 42
+fi
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "${script_dir}/notify-info-echo" "$@"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Wrapper for hook-pre-tagging-tests to run the full test matrix.
+set -euo pipefail
+exec "$(dirname "${BASH_SOURCE[0]}")/run-tests" --all

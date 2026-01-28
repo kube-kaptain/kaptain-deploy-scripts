@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Apply manifests to Kubernetes via namespace-locked k wrapper.
+# Output captured to audit log for inspection if needed.
+set -euo pipefail
+
+base="${RUN_BASE_PATH:-/run}"
+manifests_dir="${base}/work/manifests"
+audit_dir="${base}/work/audit"
+apply_log="${audit_dir}/apply.log"
+
+if k apply -f "${manifests_dir}/" > "${apply_log}" 2>&1; then
+  notify-info "Manifests applied to ${ENVIRONMENT}"
+else
+  exit_code=$?
+  notify-error "Apply failed for ${ENVIRONMENT} - inspect ${apply_log}"
+  exit ${exit_code}
+fi

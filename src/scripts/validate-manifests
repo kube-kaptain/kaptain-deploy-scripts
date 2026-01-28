@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Validate manifests against Kubernetes API via dry-run.
+# Validates each file individually, capturing output to audit directory.
+set -euo pipefail
+
+base="${RUN_BASE_PATH:-/run}"
+manifests_dir="${base}/work/manifests"
+audit_dir="${base}/work/audit/validation"
+
+mkdir -p "${audit_dir}"
+
+log "Validating manifests against API server (dry-run)"
+
+scanned=0
+passed=0
+failed=0
+failed_files=()
+
+shopt -s globstar nullglob
+for manifest in "${manifests_dir}"/**/*.yaml; do
+  [[ -f "${manifest}" ]] || continue
+
+  # Create flattened audit filename: path/to/file.yaml → path_to_file.txt
+  relative="${manifest#"${manifests_dir}/"}"
+  audit_file="${audit_dir}/${relative//\//_}"
+  audit_file="${audit_file%.yaml}.txt"
+
+  scanned=$((scanned + 1))
+
+  if k apply --dry-run=server -f "${manifest}" > "${audit_file}" 2>&1; then
+    passed=$((passed + 1))
+  else
+    failed=$((failed + 1))
+    failed_files+=("${relative}")
+  fi
+done
+shopt -u globstar nullglob
+
+if [[ ${scanned} -eq 0 ]]; then
+  notify-error "No manifest files found to validate in ${manifests_dir}"
+  exit 43
+fi
+
+if [[ ${failed} -eq 0 ]]; then
+  notify-info "Validated ${scanned} files against the Kubernetes API - all passed"
+else
+  message="Validation failed: ${failed}/${scanned} files rejected"
+  message+=$'\n'"Failed files:"
+  for file in "${failed_files[@]}"; do
+    message+=$'\n'"  - ${file}"
+  done
+  message+=$'\n'"To inspect validation output:"
+  message+=$'\n'"  kubectl exec -it <pod> -- ls ${audit_dir}"
+  message+=$'\n'"  kubectl exec -it <pod> -- cat ${audit_dir}/<filename>.txt"
+  notify-error "${message}"
+  exit 1
+fi

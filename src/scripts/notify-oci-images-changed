@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Compare before/after OCI image lists and notify of changes.
+# Groups changes by registry for readable output.
+set -euo pipefail
+
+base="${RUN_BASE_PATH:-/run}"
+output_dir="${base}/work/oci-images"
+before="${output_dir}/oci-images-before-sorted"
+after="${output_dir}/oci-images-after-sorted"
+
+# Extract registry from image reference
+# If first segment contains . or : it's a registry, otherwise docker.io
+get_registry() {
+  local image="$1"
+  local first_segment="${image%%/*}"
+
+  if [[ "${first_segment}" == "${image}" ]]; then
+    # No slash - bare image name like "nginx:latest"
+    echo "docker.io"
+  elif [[ "${first_segment}" == *"."* || "${first_segment}" == *":"* ]]; then
+    # Contains . or : - it's a registry
+    echo "${first_segment}"
+  else
+    # Path without registry like "library/nginx"
+    echo "docker.io"
+  fi
+}
+
+# Get removed and added images
+removed=$(comm -23 "${before}" "${after}")
+added=$(comm -13 "${before}" "${after}")
+
+# Check if any changes
+if [[ -z "${removed}" && -z "${added}" ]]; then
+  image_count=$(wc -l < "${after}" | tr -d ' ')
+  notify-info "No OCI image changes detected, env has ${image_count} images."
+  exit 0
+fi
+
+# Collect all registries
+declare -A registry_changes
+
+while IFS= read -r image; do
+  [[ -z "${image}" ]] && continue
+  registry=$(get_registry "${image}")
+  registry_changes["${registry}"]+=$'\n'"- ${image}"
+done <<< "${removed}"
+
+while IFS= read -r image; do
+  [[ -z "${image}" ]] && continue
+  registry=$(get_registry "${image}")
+  registry_changes["${registry}"]+=$'\n'"+ ${image}"
+done <<< "${added}"
+
+# Build message grouped by registry
+message="The following OCI image changes were made:"
+
+for registry in $(printf '%s\n' "${!registry_changes[@]}" | sort); do
+  message+=$'\n'"${registry}:"
+  # Sort changes within registry
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    message+=$'\n'"  ${line}"
+  done <<< "$(echo "${registry_changes[${registry}]}" | sort)"
+done
+
+notify-info "${message}"

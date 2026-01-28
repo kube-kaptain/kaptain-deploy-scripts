@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Alert dispatcher. Fans out to all alert-* provider scripts.
+# Built-in: alert-echo. Optional: alert-slack, alert-pagerduty, etc.
+#
+# Unlike notify-*, alerts go to channels humans actively monitor.
+# Use for drift detection, scan failures, and urgent issues.
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: alert <message>" >&2
+  echo "Error: message argument required" >&2
+  exit 42
+fi
+
+message="$*"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+start_time=$(date +%s)
+threshold="${NOTIFY_TOO_SLOW_THRESHOLD:-10}"
+
+# Find and execute all alert-* provider scripts
+for provider in "${script_dir}"/alert-*; do
+  [[ -x "${provider}" ]] || continue
+  "${provider}" "${message}" || true
+done
+
+# Check if alerts took too long
+elapsed=$(( $(date +%s) - start_time ))
+if [[ "${elapsed}" -ge "${threshold}" ]]; then
+  # Fan out directly to notify-warning-* to avoid recursion through dispatcher
+  for provider in "${script_dir}"/notify-warning-*; do
+    [[ -x "${provider}" ]] || continue
+    "${provider}" "alert took ${elapsed}s (threshold: ${threshold}s)" || true
+  done
+fi

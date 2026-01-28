@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Validate that all required tooling is present and functional.
+# Intended for downstream base image builds and pre-deploy checks.
+set -euo pipefail
+
+failures=0
+checked=0
+
+check_binary() {
+  local name="$1"
+  checked=$((checked + 1))
+  if command -v "${name}" &> /dev/null; then
+    echo "  OK: ${name}"
+  else
+    echo "  MISSING: ${name}" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+check_bash_feature() {
+  local description="$1"
+  local test_code="$2"
+  checked=$((checked + 1))
+  if "$BASH" -c "${test_code}" 2>/dev/null; then
+    echo "  OK: ${description}"
+  else
+    echo "  MISSING: ${description}" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+echo "=== Validate Tooling for Kaptain Deploy Scripts  ==="
+
+echo ""
+echo "Core binaries:"
+check_binary bash
+check_binary kubectl
+check_binary age
+check_binary age-keygen
+check_binary openssl
+check_binary yq
+
+echo ""
+echo "GNU utilities:"
+check_binary find
+check_binary sort
+check_binary grep
+check_binary comm
+check_binary cmp
+check_binary tr
+check_binary wc
+check_binary sed
+check_binary cp
+check_binary mv
+check_binary mkdir
+check_binary cat
+check_binary date
+check_binary sleep
+check_binary ps
+check_binary printf
+
+echo ""
+echo "Bash version:"
+checked=$((checked + 1))
+if [[ "${BASH_VERSINFO[0]}" -ge 4 ]]; then
+  echo "  OK: bash ${BASH_VERSION} (4+ required)"
+else
+  echo "  FAIL: bash ${BASH_VERSION} (4+ required)" >&2
+  failures=$((failures + 1))
+fi
+
+echo ""
+echo "Bash features:"
+check_bash_feature "associative arrays" 'declare -A x; x[a]=1; x[b]=2; [[ "${x[a]}" == "1" ]]'
+check_bash_feature "regex match operator" '[[ "Hello" =~ ^He ]]'
+check_bash_feature "process substitution" 'read -r line < <(echo test); [[ "${line}" == "test" ]]'
+check_bash_feature "globstar" 'shopt -s globstar'
+check_bash_feature "nullglob" 'shopt -s nullglob'
+
+echo ""
+echo "Tool behaviour:"
+checked=$((checked + 1))
+if date +%s &>/dev/null; then
+  echo "  OK: date +%s (epoch seconds)"
+else
+  echo "  FAIL: date +%s (epoch seconds)" >&2
+  failures=$((failures + 1))
+fi
+
+checked=$((checked + 1))
+if echo "test" | openssl enc -md sha256 -pbkdf2 -aes-256-cbc -iter 10000 -base64 -pass pass:test &>/dev/null; then
+  echo "  OK: openssl pbkdf2 aes-256-cbc"
+else
+  echo "  FAIL: openssl pbkdf2 aes-256-cbc" >&2
+  failures=$((failures + 1))
+fi
+
+checked=$((checked + 1))
+if echo '{"a":"b"}' | yq -e '.a' &>/dev/null; then
+  echo "  OK: yq expression evaluation"
+else
+  echo "  FAIL: yq expression evaluation" >&2
+  failures=$((failures + 1))
+fi
+
+checked=$((checked + 1))
+if age-keygen 2>/dev/null | grep -q 'AGE-SECRET-KEY-'; then
+  echo "  OK: age-keygen produces keys"
+else
+  echo "  FAIL: age-keygen produces keys" >&2
+  failures=$((failures + 1))
+fi
+
+checked=$((checked + 1))
+age_version=$(age --version 2>/dev/null || echo "unknown")
+if [[ "${age_version}" == "v1.3.1" ]]; then
+  echo "  OK: age ${age_version}"
+else
+  echo "  FAIL: age ${age_version} (v1.3.1 required)" >&2
+  failures=$((failures + 1))
+fi
+
+echo ""
+echo "=== Results: ${checked} checked, ${failures} failed ==="
+
+if [[ ${failures} -gt 0 ]]; then
+  exit 1
+fi

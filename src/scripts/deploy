@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Main deploy entry point. Prepares and deploys manifests to a
+# Kubernetes namespace via the namespace-locked k wrapper.
+set -euo pipefail
+
+# Phase tracking and signal handling
+UNINTERRUPTIBLE=false
+SHUTDOWN_REQUESTED=false
+ERROR_EXIT_CODE=0
+PHASE="Pre Validation"
+
+change_phase() {
+  if [[ "${SHUTDOWN_REQUESTED}" == "true" ]]; then
+    notify-info "Shutdown requested during ${PHASE} - respecting SIGTERM"
+    notify-info "Expect a new environment version to complete deployment"
+    exit 0
+  fi
+  UNINTERRUPTIBLE="$1"
+  PHASE="$2"
+}
+
+handle_term() {
+  if [[ "${UNINTERRUPTIBLE}" == "true" ]]; then
+    notify-info "SIGTERM received during ${PHASE} - deferring until complete"
+    SHUTDOWN_REQUESTED=true
+  else
+    notify-info "SIGTERM received during ${PHASE} - shutting down"
+    exit "${ERROR_EXIT_CODE}"
+  fi
+}
+trap 'handle_term' TERM
+
+handle_int() {
+  notify-warning "SIGINT received - operator interference during ${PHASE}"
+  exit 130
+}
+trap 'handle_int' INT
+
+handle_err() {
+  ERROR_EXIT_CODE=$?
+  local line_no="${BASH_LINENO[0]}"
+  local command="${BASH_COMMAND}"
+
+  local error_type
+  if [[ ${ERROR_EXIT_CODE} -ge 3 && ${ERROR_EXIT_CODE} -le 125 ]]; then
+    error_type="Deployment"
+  else
+    error_type="Unexpected"
+  fi
+
+  local message="${error_type} error during ${PHASE}
+  Exit code: ${ERROR_EXIT_CODE}
+  Line: ${line_no}
+  Command: ${command}
+  Call stack:"
+  for i in "${!FUNCNAME[@]}"; do
+    message+="
+    ${i}: ${FUNCNAME[$i]}() at ${BASH_SOURCE[$i]}:${BASH_LINENO[$i]}"
+  done
+  message+="
+Check pod logs for more detail or exec in and inspect the audit directory."
+
+  notify-error "${message}"
+
+  if [[ "${SHUTDOWN_REQUESTED}" == "true" ]]; then
+    notify-info "Shutdown already requested - exiting"
+    exit ${ERROR_EXIT_CODE}
+  fi
+
+  notify-info "Sleeping for inspection (send SIGTERM to exit)..."
+  while true; do "$(which sleep)" 3600; done
+}
+trap 'handle_err' ERR
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/lib"
+
+source "${LIB_DIR}/timestamp.bash"
+source "${LIB_DIR}/token-format.bash"
+
+# Defaults for thread-opening message - validation will catch if actually missing
+ENVIRONMENT="${ENVIRONMENT:-UNKNOWN_ENVIRONMENT}"
+VERSION="${VERSION:-UNKNOWN_VERSION}"
+start_timestamp=$(human_timestamp)
+start_seconds=$(date -u '+%s')
+
+notify-info "*Starting ${ENVIRONMENT} version ${VERSION} deployment process* at ${start_timestamp}"
+
+validate-container
+
+# Token name and delimiter styles must be set in the image by the build
+if ! validate_token_styles; then
+  notify-error "Token style validation failed - check TOKEN_NAME_STYLE and TOKEN_DELIMITER_STYLE"
+  exit 45
+fi
+
+# Path setup - RUN_BASE_PATH allows tests to override
+base="${RUN_BASE_PATH:-/run}"
+work="${base}/work"
+decrypted="${work}/decrypted"
+audit="${work}/audit"
+
+log "Initialising structure..."
+mkdir -p "${work}/manifests"
+mkdir -p "${decrypted}"
+mkdir -p "${audit}"
+mkdir -p "${audit}/kubectl"  # Optimise 'k' process
+find "${work}"
+
+change_phase false "Preparing manifests"
+prepare-manifests
+
+change_phase false "Processing secrets"
+decrypt-secrets
+"${SCRIPT_DIR}/plugins/token-name-validators/${TOKEN_NAME_STYLE}" "${decrypted}"
+assemble-secrets
+
+# TODO also record resource types so we can show what changes somehow 
+oci-images "before"
+
+# TODO verify that the env is in a decent shape and note down details of bad stuff so we can ensre it hasn't gotten worse 
+
+change_phase false "Validating manifests"
+validate-manifests
+
+change_phase true "Applying manifests"
+apply-manifests
+# TODO apply in a more sophisticated way
+# TODO verify things are happy after this action - await happiness - but don't accept increasing restarts on anything declared
+# TODO clean up stuff we don't have declared - leave the environment exactly as declared
+
+oci-images "after"
+
+notify-oci-images-changed
+
+elapsed=$(( $(date -u '+%s') - start_seconds ))
+notify-info "Deployment complete for ${ENVIRONMENT} version ${VERSION} in ${elapsed} seconds"
+
+change_phase false "Complete"

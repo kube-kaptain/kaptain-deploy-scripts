@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Notify warning dispatcher. Fans out to all notify-warning-* provider scripts.
+# Built-in: notify-warning-echo. Optional: notify-warning-slack, etc.
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: notify-warning <message>" >&2
+  echo "Error: message argument required" >&2
+  exit 42
+fi
+
+message="$*"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+start_time=$(date +%s)
+threshold="${NOTIFY_TOO_SLOW_THRESHOLD:-10}"
+
+# Find and execute all notify-warning-* provider scripts
+for provider in "${script_dir}"/notify-warning-*; do
+  [[ -x "${provider}" ]] || continue
+  "${provider}" "${message}" || true
+done
+
+# Check if notifications took too long - log to stderr only to avoid recursion
+elapsed=$(( $(date +%s) - start_time ))
+if [[ "${elapsed}" -ge "${threshold}" ]]; then
+  echo "WARNING: notify-warning took ${elapsed}s (threshold: ${threshold}s)" >&2
+fi

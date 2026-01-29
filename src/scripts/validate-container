@@ -27,6 +27,16 @@ if [[ -z "${VERSION:-}" ]]; then
   failures=$((failures + 1))
 fi
 
+if [[ -z "${TOKEN_DELIMITER_STYLE:-}" ]]; then
+  notify-error "TOKEN_DELIMITER_STYLE must be set"
+  failures=$((failures + 1))
+fi
+
+if [[ -z "${TOKEN_NAME_STYLE:-}" ]]; then
+  notify-error "TOKEN_NAME_STYLE must be set"
+  failures=$((failures + 1))
+fi
+
 # Required mount paths
 if [[ ! -d "${mount_base}/secret" ]]; then
   notify-error "Secret mount not found: ${mount_base}/secret"

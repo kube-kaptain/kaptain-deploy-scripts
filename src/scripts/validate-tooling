@@ -24,7 +24,7 @@ check_bash_feature() {
   local description="$1"
   local test_code="$2"
   checked=$((checked + 1))
-  if "$BASH" -c "${test_code}" 2>/dev/null; then
+  if "${BASH}" -c "${test_code}" 2>/dev/null; then
     echo "  OK: ${description}"
   else
     echo "  MISSING: ${description}" >&2
@@ -74,8 +74,10 @@ fi
 
 echo ""
 echo "Bash features:"
+# shellcheck disable=SC2016 # Single quotes intentional - code passed to subshell
 check_bash_feature "associative arrays" 'declare -A x; x[a]=1; x[b]=2; [[ "${x[a]}" == "1" ]]'
 check_bash_feature "regex match operator" '[[ "Hello" =~ ^He ]]'
+# shellcheck disable=SC2016 # Single quotes intentional - code passed to subshell
 check_bash_feature "process substitution" 'read -r line < <(echo test); [[ "${line}" == "test" ]]'
 check_bash_feature "globstar" 'shopt -s globstar'
 check_bash_feature "nullglob" 'shopt -s nullglob'

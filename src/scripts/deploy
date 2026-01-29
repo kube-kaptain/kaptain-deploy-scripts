@@ -89,6 +89,13 @@ start_seconds=$(date -u '+%s')
 
 notify-info "*Starting ${ENVIRONMENT} version ${VERSION} deployment process* at ${start_timestamp}"
 
+if ! validate-tooling; then
+  notify-error "Tooling validation failed, this message may not send.
+
+Use an appropriate base image and build process!"
+  exit 43
+fi
+validate-environment
 validate-container
 
 # Token name and delimiter styles must be set in the image by the build

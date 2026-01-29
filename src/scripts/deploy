@@ -58,7 +58,7 @@ handle_err() {
   Call stack:"
   for i in "${!FUNCNAME[@]}"; do
     message+="
-    ${i}: ${FUNCNAME[$i]}() at ${BASH_SOURCE[$i]}:${BASH_LINENO[$i]}"
+    ${i}: ${FUNCNAME[${i}]}() at ${BASH_SOURCE[${i}]}:${BASH_LINENO[${i}]}"
   done
   message+="
 Check pod logs for more detail or exec in and inspect the audit directory."
@@ -71,6 +71,7 @@ Check pod logs for more detail or exec in and inspect the audit directory."
   fi
 
   notify-info "Sleeping for inspection (send SIGTERM to exit)..."
+  # shellcheck disable=SC2230 # Using which to get absolute path, bypassing any overrides
   while true; do "$(which sleep)" 3600; done
 }
 trap 'handle_err' ERR
@@ -78,7 +79,9 @@ trap 'handle_err' ERR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/lib"
 
+# shellcheck source=src/scripts/lib/timestamp.bash
 source "${LIB_DIR}/timestamp.bash"
+# shellcheck source=src/scripts/lib/token-format.bash
 source "${LIB_DIR}/token-format.bash"
 
 # Defaults for thread-opening message - validation will catch if actually missing
@@ -89,6 +92,13 @@ start_seconds=$(date -u '+%s')
 
 notify-info "*Starting ${ENVIRONMENT} version ${VERSION} deployment process* at ${start_timestamp}"
 
+if ! validate-tooling; then
+  notify-error "Tooling validation failed, this message may not send.
+
+Use an appropriate base image and build process!"
+  exit 43
+fi
+validate-environment
 validate-container
 
 # Token name and delimiter styles must be set in the image by the build
@@ -115,6 +125,7 @@ prepare-manifests
 
 change_phase false "Processing secrets"
 decrypt-secrets
+# shellcheck disable=SC2154 # TOKEN_NAME_STYLE set by environment build process
 "${SCRIPT_DIR}/plugins/token-name-validators/${TOKEN_NAME_STYLE}" "${decrypted}"
 assemble-secrets
 

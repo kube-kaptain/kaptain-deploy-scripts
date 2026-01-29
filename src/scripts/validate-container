@@ -2,30 +2,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
 #
-# Validate container environment before deploy.
-# Checks required env vars, mounted paths, and runs plugin validators.
+# Validate container runtime structure before deploy.
+# Checks mounted paths, and runs plugin validators, if any.
 set -euo pipefail
 
 log "Validating container up front..."
 
 failures=0
 mount_base="${MOUNT_BASE_PATH:-}"
-
-# Required environment variables
-if [[ -z "${DEPLOY_MODE:-}" ]]; then
-  notify-error "DEPLOY_MODE must be set"
-  failures=$((failures + 1))
-fi
-
-if [[ -z "${ENVIRONMENT:-}" ]]; then
-  notify-error "ENVIRONMENT must be set"
-  failures=$((failures + 1))
-fi
-
-if [[ -z "${VERSION:-}" ]]; then
-  notify-error "VERSION must be set"
-  failures=$((failures + 1))
-fi
 
 # Required mount paths
 if [[ ! -d "${mount_base}/secret" ]]; then

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Validate environment variables before deploy and after final build.
+# Checks required env vars and runs plugin validators.
+set -euo pipefail
+
+log "Validating environment variables up front..."
+
+failures=0
+
+# Required environment variables
+if [[ -z "${DEPLOY_MODE:-}" ]]; then
+  notify-error "DEPLOY_MODE must be set"
+  failures=$((failures + 1))
+fi
+
+if [[ -z "${ENVIRONMENT:-}" ]]; then
+  notify-error "ENVIRONMENT must be set"
+  failures=$((failures + 1))
+fi
+
+if [[ -z "${VERSION:-}" ]]; then
+  notify-error "VERSION must be set"
+  failures=$((failures + 1))
+fi
+
+if [[ -z "${TOKEN_DELIMITER_STYLE:-}" ]]; then
+  notify-error "TOKEN_DELIMITER_STYLE must be set"
+  failures=$((failures + 1))
+fi
+
+if [[ -z "${TOKEN_NAME_STYLE:-}" ]]; then
+  notify-error "TOKEN_NAME_STYLE must be set"
+  failures=$((failures + 1))
+fi
+
+# Run plugin validators
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+shopt -s nullglob
+for validator in "${script_dir}"/validate-environment-*; do
+  if [[ ! -f "${validator}" ]]; then
+    notify-error "Environment validation script '${validator}' is not a file!"
+    failures=$((failures + 1))
+  elif [[ ! -x "${validator}" ]]; then
+    notify-error "Environment validation script '${validator}' is not executable!"
+    failures=$((failures + 1))
+  elif ! "${validator}"; then
+    failures=$((failures + 1))
+  fi
+done
+shopt -u nullglob
+
+# Report result
+if [[ ${failures} -eq 0 ]]; then
+  notify-info "Environment validation passed - continuing"
+elif [[ ${failures} -eq 1 ]]; then
+  notify-error "Environment validation failed with 1 error"
+  exit 44
+else
+  notify-error "Environment validation failed with ${failures} errors"
+  exit 44
+fi

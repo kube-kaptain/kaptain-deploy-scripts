@@ -11,6 +11,7 @@ manifests_dir="${base}/work/manifests"
 audit_dir="${base}/work/audit"
 apply_log="${audit_dir}/apply.log"
 
+# shellcheck disable=SC2154 # ENVIRONMENT set by environment build process
 if k apply -f "${manifests_dir}/" > "${apply_log}" 2>&1; then
   notify-info "Manifests applied to ${ENVIRONMENT}"
 else

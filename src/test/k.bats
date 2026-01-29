@@ -4,7 +4,7 @@
 #
 # Tests for the k (namespace-locked kubectl wrapper) script.
 # k hardcodes /run/work/audit/kubectl for audit logs.
-# k uses ${Environment} which is token-substituted at image build time.
+# k uses ENVIRONMENT which is set by the environment build process.
 
 load test_helper
 
@@ -13,7 +13,7 @@ setup() {
   install_mock_kubectl
   # k writes to /run/work/audit/kubectl (hardcoded)
   mkdir -p /run/work/audit/kubectl
-  export Environment="test-namespace"
+  export ENVIRONMENT="test-namespace"
 }
 
 teardown() {

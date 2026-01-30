@@ -137,3 +137,65 @@ teardown() {
   run deploy
   [[ "$output" == *"Deployment complete for test-env"* ]]
 }
+
+# Mode-specific behavior tests
+
+@test "deploy in job mode sleeps POST_DEPLOY_SLEEP_SUCCESS before exit" {
+  export DEPLOY_MODE="job"
+  run deploy
+  [[ "$output" == *"sleeping 600s before exit"* ]]
+}
+
+@test "deploy in job mode uses custom POST_DEPLOY_SLEEP_SUCCESS" {
+  export DEPLOY_MODE="job"
+  export POST_DEPLOY_SLEEP_SUCCESS="120"
+  run deploy
+  [[ "$output" == *"sleeping 120s before exit"* ]]
+}
+
+@test "deploy in deployment mode sleeps forever" {
+  install_mock_sleep_killer  # Need killer to break infinite loop
+  export DEPLOY_MODE="deployment"
+  run deploy
+  [[ "$output" == *"sleeping forever"* ]]
+}
+
+@test "deploy in job mode on error sleeps POST_DEPLOY_SLEEP_FAILURE before exit" {
+  export DEPLOY_MODE="job"
+  # Make apply-manifests fail to trigger error handler
+  cat > "${TEST_MOCK_BIN}/apply-manifests" << 'MOCK'
+#!/usr/bin/env bash
+exit 3
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/apply-manifests"
+  run deploy
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Sleeping 86400s before exit"* ]]
+}
+
+@test "deploy in job mode on error uses custom POST_DEPLOY_SLEEP_FAILURE" {
+  export DEPLOY_MODE="job"
+  export POST_DEPLOY_SLEEP_FAILURE="300"
+  # Make apply-manifests fail to trigger error handler
+  cat > "${TEST_MOCK_BIN}/apply-manifests" << 'MOCK'
+#!/usr/bin/env bash
+exit 3
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/apply-manifests"
+  run deploy
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Sleeping 300s before exit"* ]]
+}
+
+@test "deploy in deployment mode on error sleeps forever" {
+  install_mock_sleep_killer  # Need killer to break infinite loop
+  export DEPLOY_MODE="deployment"
+  # Make apply-manifests fail to trigger error handler
+  cat > "${TEST_MOCK_BIN}/apply-manifests" << 'MOCK'
+#!/usr/bin/env bash
+exit 3
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/apply-manifests"
+  run deploy
+  [[ "$output" == *"Sleeping forever for inspection"* ]]
+}

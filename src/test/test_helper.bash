@@ -91,16 +91,31 @@ MOCK
 }
 
 install_mock_sleep() {
+  # Mock sleep: real sleep for 1s only, instant return for >=2s
   local real_sleep
   real_sleep="$(which sleep)"
   cat > "${TEST_MOCK_BIN}/sleep" << MOCK
 #!/usr/bin/env bash
-# For large values (deploy's while-true loop), kill parent to break out.
-# For small values (test timing), use real sleep.
 arg="\${1:-0}"
 int="\${arg%%.*}"
-if [[ "\${int}" -ge 60 ]] 2>/dev/null; then
-  kill -TERM "\$PPID" 2>/dev/null
+if [[ "\${int}" -ge 2 ]] 2>/dev/null; then
+  exit 0
+fi
+exec "${real_sleep}" "\$@"
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/sleep"
+}
+
+install_mock_sleep_killer() {
+  # Mock sleep that kills parent for >=2s - for breaking infinite loops
+  local real_sleep
+  real_sleep="$(which sleep)"
+  cat > "${TEST_MOCK_BIN}/sleep" << MOCK
+#!/usr/bin/env bash
+arg="\${1:-0}"
+int="\${arg%%.*}"
+if [[ "\${int}" -ge 2 ]] 2>/dev/null; then
+  kill -KILL "\$PPID" 2>/dev/null
   exit 0
 fi
 exec "${real_sleep}" "\$@"

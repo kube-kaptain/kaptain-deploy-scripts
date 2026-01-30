@@ -12,6 +12,10 @@ SHUTDOWN_REQUESTED=false
 ERROR_EXIT_CODE=0
 PHASE="Pre Validation"
 
+# Job mode sleep durations (seconds) - configurable via environment
+POST_DEPLOY_SLEEP_SUCCESS="${POST_DEPLOY_SLEEP_SUCCESS:-600}"    # 10 minutes
+POST_DEPLOY_SLEEP_FAILURE="${POST_DEPLOY_SLEEP_FAILURE:-86400}"  # 24 hours
+
 change_phase() {
   if [[ "${SHUTDOWN_REQUESTED}" == "true" ]]; then
     notify-info "Shutdown requested during ${PHASE} - respecting SIGTERM"
@@ -70,9 +74,17 @@ Check pod logs for more detail or exec in and inspect the audit directory."
     exit ${ERROR_EXIT_CODE}
   fi
 
-  notify-info "Sleeping for inspection (send SIGTERM to exit)..."
+  # Sleep behavior depends on DEPLOY_MODE
   # shellcheck disable=SC2230 # Using which to get absolute path, bypassing any overrides
-  while true; do "$(which sleep)" 3600; done
+  # shellcheck disable=SC2154 # DEPLOY_MODE set by environment, validated by validate-environment
+  if [[ "${DEPLOY_MODE}" == "deployment" ]]; then
+    notify-info "Sleeping forever for inspection..."
+    while true; do "$(which sleep)" 3600; done
+  else
+    notify-info "Sleeping ${POST_DEPLOY_SLEEP_FAILURE}s before exit, to allow for inspection..."
+    "$(which sleep)" "${POST_DEPLOY_SLEEP_FAILURE}"
+    exit ${ERROR_EXIT_CODE}
+  fi
 }
 trap 'handle_err' ERR
 
@@ -151,3 +163,14 @@ elapsed=$(( $(date -u '+%s') - start_seconds ))
 notify-info "Deployment complete for ${ENVIRONMENT} version ${VERSION} in ${elapsed} seconds"
 
 change_phase false "Complete"
+
+# Sleep behavior depends on DEPLOY_MODE
+# shellcheck disable=SC2230 # Using which to get absolute path, bypassing any overrides
+# shellcheck disable=SC2154 # DEPLOY_MODE set by environment, validated by validate-environment
+if [[ "${DEPLOY_MODE}" == "deployment" ]]; then
+  notify-info "Deployment complete - sleeping forever..."
+  while true; do "$(which sleep)" 3600; done
+else
+  notify-info "Deployment complete - sleeping ${POST_DEPLOY_SLEEP_SUCCESS}s before exit..."
+  "$(which sleep)" "${POST_DEPLOY_SLEEP_SUCCESS}"
+fi

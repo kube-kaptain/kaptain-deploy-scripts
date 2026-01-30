@@ -226,9 +226,11 @@ run_matrix() {
     local minor=${KUBE_MINOR_MIN}
     while [[ ${minor} -le ${KUBE_MINOR_MAX} ]]; do
       local tag="1.${minor}.${patch}"
+      local base_image="${REGISTRY}/${IMAGE_PREFIX}-${distro}:${tag}"
       local image_id
       image_id=$(build_test_image "${distro}" "${tag}")
       run_tests_in_container "${image_id}" "${distro}:${tag}"
+      run_host_side_tests "${base_image}" "${distro}:${tag}"
       minor=$((minor + 1))
     done
   done
@@ -236,9 +238,34 @@ run_matrix() {
 
 run_default() {
   echo "--- Default: ${DEFAULT_DISTRO}:${DEFAULT_TAG} ---"
+  local base_image="${REGISTRY}/${IMAGE_PREFIX}-${DEFAULT_DISTRO}:${DEFAULT_TAG}"
   local image_id
   image_id=$(build_test_image "${DEFAULT_DISTRO}" "${DEFAULT_TAG}")
   run_tests_in_container "${image_id}" "${DEFAULT_DISTRO}:${DEFAULT_TAG}"
+  run_host_side_tests "${base_image}" "${DEFAULT_DISTRO}:${DEFAULT_TAG}"
+}
+
+run_host_side_tests() {
+  local base_image="$1"
+  local label="$2"
+
+  # Skip if running specific bats file that isn't the host-side tests
+  if [[ -n "${ONE_BATS:-}" && "${ONE_BATS}" != "entrypoint-scripts" ]]; then
+    return 0
+  fi
+
+  echo "Running host-side tests: ${label}"
+
+  if TEST_IMAGE="${base_image}" \
+     SCRIPTS_DIR="${SRC_DIR}/scripts" \
+     bats "${SRC_DIR}/test/host-side/entrypoint-scripts.bats"; then
+    echo "  PASSED: host-side ${label}"
+    PASSED=$((PASSED + 1))
+  else
+    echo "  FAILED: host-side ${label}"
+    FAILED=$((FAILED + 1))
+  fi
+  echo ""
 }
 
 main() {

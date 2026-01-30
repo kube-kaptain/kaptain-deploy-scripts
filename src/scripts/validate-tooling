@@ -125,6 +125,23 @@ else
   failures=$((failures + 1))
 fi
 
+# Run plugin validators
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for validator in "${script_dir}"/validate-tooling-*; do
+  [[ -e "${validator}" ]] || continue
+  echo ""
+  echo "Plugin: ${validator##*/}"
+  if [[ ! -f "${validator}" ]]; then
+    echo "  FAIL: not a file" >&2
+    failures=$((failures + 1))
+  elif [[ ! -x "${validator}" ]]; then
+    echo "  FAIL: not executable" >&2
+    failures=$((failures + 1))
+  elif ! "${validator}"; then
+    failures=$((failures + 1))
+  fi
+done
+
 echo ""
 echo "=== Results: ${checked} checked, ${failures} failed ==="
 

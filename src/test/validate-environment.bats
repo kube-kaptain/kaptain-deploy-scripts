@@ -34,6 +34,25 @@ teardown() {
   [[ "$output" == *"DEPLOY_MODE must be set"* ]]
 }
 
+@test "validate-environment fails when DEPLOY_MODE is invalid" {
+  export DEPLOY_MODE="invalid"
+  run validate-environment
+  [ "$status" -eq 44 ]
+  [[ "$output" == *"DEPLOY_MODE must be 'deployment' or 'job'"* ]]
+}
+
+@test "validate-environment passes with DEPLOY_MODE=deployment" {
+  export DEPLOY_MODE="deployment"
+  run validate-environment
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-environment passes with DEPLOY_MODE=job" {
+  export DEPLOY_MODE="job"
+  run validate-environment
+  [ "$status" -eq 0 ]
+}
+
 @test "validate-environment fails when ENVIRONMENT is unset" {
   unset ENVIRONMENT
   run validate-environment

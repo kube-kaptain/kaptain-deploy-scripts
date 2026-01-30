@@ -14,6 +14,9 @@ failures=0
 if [[ -z "${DEPLOY_MODE:-}" ]]; then
   notify-error "DEPLOY_MODE must be set"
   failures=$((failures + 1))
+elif [[ "${DEPLOY_MODE}" != "deployment" && "${DEPLOY_MODE}" != "job" ]]; then
+  notify-error "DEPLOY_MODE must be 'deployment' or 'job', got '${DEPLOY_MODE}'"
+  failures=$((failures + 1))
 fi
 
 if [[ -z "${ENVIRONMENT:-}" ]]; then

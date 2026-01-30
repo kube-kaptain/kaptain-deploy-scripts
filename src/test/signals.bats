@@ -43,7 +43,7 @@ teardown() {
 echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"
 if [[ "$*" == *"apply -f"* ]] && [[ "$*" != *"--dry-run"* ]]; then
   # Slow down the real apply to give time for signal
-  sleep 2
+  sleep 1
 fi
 echo "mock: $*"
 MOCK
@@ -54,7 +54,7 @@ MOCK
   local deploy_pid=$!
 
   # Wait for it to reach apply phase
-  sleep 1
+  sleep 0.5
 
   # Send SIGTERM
   kill -TERM "${deploy_pid}" 2>/dev/null || true
@@ -75,7 +75,7 @@ MOCK
   # Make prepare-manifests slow to catch SIGTERM during it
   cat > "${TEST_MOCK_BIN}/prepare-manifests" << 'MOCK'
 #!/usr/bin/env bash
-sleep 3
+sleep 1
 cp -a "${RUN_BASE_PATH}/manifests/"* "${RUN_BASE_PATH}/work/manifests/"
 MOCK
   chmod +x "${TEST_MOCK_BIN}/prepare-manifests"
@@ -85,7 +85,7 @@ MOCK
   local deploy_pid=$!
 
   # Wait for it to start preparing
-  sleep 0.5
+  sleep 0.3
 
   # Send SIGTERM during interruptible phase
   kill -TERM "${deploy_pid}" 2>/dev/null || true

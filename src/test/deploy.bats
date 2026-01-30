@@ -154,6 +154,7 @@ teardown() {
 }
 
 @test "deploy in deployment mode sleeps forever" {
+  install_mock_sleep_killer  # Need killer to break infinite loop
   export DEPLOY_MODE="deployment"
   run deploy
   [[ "$output" == *"sleeping forever"* ]]
@@ -187,6 +188,7 @@ MOCK
 }
 
 @test "deploy in deployment mode on error sleeps forever" {
+  install_mock_sleep_killer  # Need killer to break infinite loop
   export DEPLOY_MODE="deployment"
   # Make apply-manifests fail to trigger error handler
   cat > "${TEST_MOCK_BIN}/apply-manifests" << 'MOCK'

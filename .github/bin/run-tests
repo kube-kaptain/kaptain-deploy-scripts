@@ -269,6 +269,12 @@ run_host_side_tests() {
 }
 
 main() {
+  # Install BATS if not available (CI environments like GitHub Actions ubuntu-24.04)
+  if ! command -v bats &>/dev/null; then
+    echo "Installing BATS..."
+    sudo apt-get update -qq && sudo apt-get install -y -qq bats
+  fi
+
   local run_all=false
   ONE_BATS=""
   while [[ $# -gt 0 ]]; do

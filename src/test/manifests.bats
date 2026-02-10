@@ -93,7 +93,7 @@ MOCK
   export ENVIRONMENT="test-env"
   run apply-manifests
   [ "$status" -eq 0 ]
-  grep -q "apply -f" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q "apply -R -f" "${TEST_RUN_BASE}/work/k-commands.log"
 }
 
 @test "apply-manifests creates audit log" {
@@ -118,7 +118,7 @@ MOCK
   cat > "${TEST_MOCK_BIN}/k" << 'MOCK'
 #!/usr/bin/env bash
 echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"
-if [[ "$*" == *"apply -f"* ]] && [[ "$*" != *"--dry-run"* ]]; then
+if [[ "$*" == *"apply -R -f"* ]] && [[ "$*" != *"--dry-run"* ]]; then
   echo "apply error" >&2
   exit 1
 fi

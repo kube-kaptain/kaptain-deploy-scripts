@@ -23,17 +23,17 @@ KUBE_MINOR_MIN=32
 KUBE_MINOR_MAX=35
 
 # Patch levels per distro (UBI lags behind by one point release)
-PATCH_alpine_3_23=4
-PATCH_trixie_slim=4
-PATCH_ubi_9_minimal=3
-PATCH_ubuntu_24_04_lts=4
+PATCH_alpine_3_23=6
+PATCH_trixie_slim=6
+PATCH_ubi_9_minimal=5
+PATCH_ubuntu_24_04_lts=6
 
 # Distros - must match Dockerfile template suffixes
 DISTROS="alpine-3-23 trixie-slim ubi-9-minimal ubuntu-24-04-lts"
 
 # Default mode: single quick validation
 DEFAULT_DISTRO="trixie-slim"
-DEFAULT_TAG="1.35.4"
+DEFAULT_TAG="1.35.6"
 
 # Counters
 FAILED=0
@@ -186,19 +186,19 @@ run_tests_in_container() {
   local label="$2"
   local bats_args=""
   if [[ -n "${ONE_BATS:-}" ]]; then
-    bats_args="/run/test/${ONE_BATS}.bats"
+    bats_args="/kd/test/${ONE_BATS}.bats"
     label="${label} [${ONE_BATS}]"
   fi
 
   echo "Running tests: ${label}"
 
   if docker run --rm \
-    -v "${SRC_DIR}/scripts:/run/bin:ro" \
-    -v "${SRC_DIR}/test:/run/test:ro" \
-    -v "${SRC_DIR}/test/fixtures/manifests:/run/fixtures/manifests:ro" \
-    -v "${SRC_DIR}/test/fixtures/secrets:/run/fixtures/secrets:ro" \
-    -v "${SRC_DIR}/test/fixtures/templates:/run/fixtures/templates:ro" \
-    -e "PATH=/run/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    -v "${SRC_DIR}/scripts:/kd/bin:ro" \
+    -v "${SRC_DIR}/test:/kd/test:ro" \
+    -v "${SRC_DIR}/test/fixtures/manifests:/kd/fixtures/manifests:ro" \
+    -v "${SRC_DIR}/test/fixtures/secrets:/kd/fixtures/secrets:ro" \
+    -v "${SRC_DIR}/test/fixtures/templates:/kd/fixtures/templates:ro" \
+    -e "PATH=/kd/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     "${image_id}" \
     run-bats ${bats_args}; then
     echo "  PASSED: ${label}"

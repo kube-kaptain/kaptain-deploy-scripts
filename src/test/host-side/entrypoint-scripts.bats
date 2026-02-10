@@ -22,27 +22,27 @@ setup() {
 # Helper to run script as container entrypoint with scripts mounted
 run_as_entrypoint() {
   docker run --rm \
-    -v "${SCRIPTS_DIR}:/run/bin:ro" \
-    -e "PATH=/run/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    -v "${SCRIPTS_DIR}:/kd/bin:ro" \
+    -e "PATH=/kd/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     "$@"
 }
 
 # --- notify-*-echo scripts ---
 
 @test "notify-info-echo produces output as entrypoint" {
-  run run_as_entrypoint "${TEST_IMAGE}" /run/bin/notify-info-echo "entrypoint test"
+  run run_as_entrypoint "${TEST_IMAGE}" /kd/bin/notify-info-echo "entrypoint test"
   [ "$status" -eq 0 ]
   [[ "$output" == *"entrypoint test"* ]]
 }
 
 @test "notify-error-echo produces output as entrypoint" {
-  run run_as_entrypoint "${TEST_IMAGE}" /run/bin/notify-error-echo "error test"
+  run run_as_entrypoint "${TEST_IMAGE}" /kd/bin/notify-error-echo "error test"
   [ "$status" -eq 0 ]
   [[ "$output" == *"error test"* ]]
 }
 
 @test "notify-warning-echo produces output as entrypoint" {
-  run run_as_entrypoint "${TEST_IMAGE}" /run/bin/notify-warning-echo "warning test"
+  run run_as_entrypoint "${TEST_IMAGE}" /kd/bin/notify-warning-echo "warning test"
   [ "$status" -eq 0 ]
   [[ "$output" == *"warning test"* ]]
 }
@@ -50,19 +50,19 @@ run_as_entrypoint() {
 # --- notify-* dispatcher scripts ---
 
 @test "notify-info produces output as entrypoint" {
-  run run_as_entrypoint "${TEST_IMAGE}" /run/bin/notify-info "info dispatch test"
+  run run_as_entrypoint "${TEST_IMAGE}" /kd/bin/notify-info "info dispatch test"
   [ "$status" -eq 0 ]
   [[ "$output" == *"info dispatch test"* ]]
 }
 
 @test "notify-error produces output as entrypoint" {
-  run run_as_entrypoint "${TEST_IMAGE}" /run/bin/notify-error "error dispatch test"
+  run run_as_entrypoint "${TEST_IMAGE}" /kd/bin/notify-error "error dispatch test"
   [ "$status" -eq 0 ]
   [[ "$output" == *"error dispatch test"* ]]
 }
 
 @test "notify-warning produces output as entrypoint" {
-  run run_as_entrypoint "${TEST_IMAGE}" /run/bin/notify-warning "warning dispatch test"
+  run run_as_entrypoint "${TEST_IMAGE}" /kd/bin/notify-warning "warning dispatch test"
   [ "$status" -eq 0 ]
   [[ "$output" == *"warning dispatch test"* ]]
 }
@@ -70,7 +70,7 @@ run_as_entrypoint() {
 # --- alert-echo script ---
 
 @test "alert-echo produces output as entrypoint" {
-  run run_as_entrypoint "${TEST_IMAGE}" /run/bin/alert-echo "alert test"
+  run run_as_entrypoint "${TEST_IMAGE}" /kd/bin/alert-echo "alert test"
   [ "$status" -eq 0 ]
   [[ "$output" == *"alert test"* ]]
 }
@@ -78,7 +78,7 @@ run_as_entrypoint() {
 # --- alert dispatcher script ---
 
 @test "alert produces output as entrypoint" {
-  run run_as_entrypoint "${TEST_IMAGE}" /run/bin/alert "alert dispatch test"
+  run run_as_entrypoint "${TEST_IMAGE}" /kd/bin/alert "alert dispatch test"
   [ "$status" -eq 0 ]
   [[ "$output" == *"alert dispatch test"* ]]
 }
@@ -86,7 +86,7 @@ run_as_entrypoint() {
 # --- log script ---
 
 @test "log produces output as entrypoint" {
-  run run_as_entrypoint "${TEST_IMAGE}" /run/bin/log "log test"
+  run run_as_entrypoint "${TEST_IMAGE}" /kd/bin/log "log test"
   [ "$status" -eq 0 ]
   [[ "$output" == *"log test"* ]]
 }
@@ -94,17 +94,17 @@ run_as_entrypoint() {
 # --- validate-* scripts (expected failures with visible output) ---
 
 @test "validate-environment shows errors when env missing" {
-  run run_as_entrypoint "${TEST_IMAGE}" /run/bin/validate-environment
+  run run_as_entrypoint "${TEST_IMAGE}" /kd/bin/validate-environment
   [ "$status" -ne 0 ]
   [[ "$output" == *"must be set"* ]]
 }
 
 @test "validate-container shows errors when mounts missing" {
   run docker run --rm \
-    -v "${SCRIPTS_DIR}:/run/bin:ro" \
-    -e "PATH=/run/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    -v "${SCRIPTS_DIR}:/kd/bin:ro" \
+    -e "PATH=/kd/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     -e "MOUNT_BASE_PATH=/nonexistent" \
-    "${TEST_IMAGE}" /run/bin/validate-container
+    "${TEST_IMAGE}" /kd/bin/validate-container
   [ "$status" -ne 0 ]
   [[ "$output" == *"not found"* ]]
 }

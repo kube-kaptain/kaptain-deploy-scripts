@@ -7,7 +7,7 @@
 # Logs each invocation to the audit directory before executing.
 set -euo pipefail
 
-AUDIT_DIR="/run/work/audit/kubectl"
+AUDIT_DIR="/kd/work/audit/kubectl"
 
 # Identify the calling script or shell
 caller="$(ps -o comm= -p ${PPID} 2>/dev/null || true)"

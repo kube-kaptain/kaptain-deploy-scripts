@@ -120,7 +120,7 @@ if ! validate_token_styles; then
 fi
 
 # Path setup - RUN_BASE_PATH allows tests to override
-base="${RUN_BASE_PATH:-/run}"
+base="${RUN_BASE_PATH:-/kd}"
 work="${base}/work"
 decrypted="${work}/decrypted"
 audit="${work}/audit"

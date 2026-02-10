@@ -9,5 +9,5 @@ set -euo pipefail
 if [[ $# -gt 0 ]]; then
   exec bats "$@"
 else
-  exec bats /run/test/*.bats
+  exec bats /kd/test/*.bats
 fi

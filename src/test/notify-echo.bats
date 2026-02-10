@@ -6,7 +6,7 @@
 # These are the built-in echo providers that output to stdout/stderr.
 # Must work even when PPID=0 (container init process) or ps fails.
 
-SCRIPTS_DIR="/run/bin"
+SCRIPTS_DIR="/kd/bin"
 
 @test "notify-info-echo produces output with message" {
   run "${SCRIPTS_DIR}/notify-info-echo" "test message"
@@ -173,25 +173,25 @@ SCRIPTS_DIR="/run/bin"
 @test "notify-info-echo works when run as container entrypoint" {
   # When run as PID 1, PPID=0, grandparent lookup fails
   # Simulate by calling from minimal process chain where grandparent is PID 1
-  run bash -c 'exec bash -c "exec /run/bin/notify-info-echo \"entrypoint test\""'
+  run bash -c 'exec bash -c "exec /kd/bin/notify-info-echo \"entrypoint test\""'
   [ "$status" -eq 0 ]
   [[ "$output" == *"entrypoint test"* ]]
 }
 
 @test "notify-error-echo works when run as container entrypoint" {
-  run bash -c 'exec bash -c "exec /run/bin/notify-error-echo \"entrypoint error\""'
+  run bash -c 'exec bash -c "exec /kd/bin/notify-error-echo \"entrypoint error\""'
   [ "$status" -eq 0 ]
   [[ "$output" == *"entrypoint error"* ]]
 }
 
 @test "notify-info works when run as container entrypoint" {
-  run bash -c 'exec bash -c "exec /run/bin/notify-info \"dispatcher test\""'
+  run bash -c 'exec bash -c "exec /kd/bin/notify-info \"dispatcher test\""'
   [ "$status" -eq 0 ]
   [[ "$output" == *"dispatcher test"* ]]
 }
 
 @test "notify-error works when run as container entrypoint" {
-  run bash -c 'exec bash -c "exec /run/bin/notify-error \"dispatcher error\""'
+  run bash -c 'exec bash -c "exec /kd/bin/notify-error \"dispatcher error\""'
   [ "$status" -eq 0 ]
   [[ "$output" == *"dispatcher error"* ]]
 }
@@ -202,7 +202,7 @@ SCRIPTS_DIR="/run/bin"
 @test "validate-environment produces error output when env vars missing" {
   # Unset required vars - validation SHOULD fail with visible error messages
   unset DEPLOY_MODE ENVIRONMENT VERSION TOKEN_DELIMITER_STYLE TOKEN_NAME_STYLE
-  run bash -c 'exec /run/bin/validate-environment'
+  run bash -c 'exec /kd/bin/validate-environment'
   # Should fail (exit 44) but with visible output
   [ "$status" -ne 0 ]
   [[ "$output" == *"must be set"* ]]
@@ -211,7 +211,7 @@ SCRIPTS_DIR="/run/bin"
 @test "validate-container produces error output when mounts missing" {
   # No mounts configured - validation SHOULD fail with visible error messages
   export MOUNT_BASE_PATH="/nonexistent"
-  run bash -c 'exec /run/bin/validate-container'
+  run bash -c 'exec /kd/bin/validate-container'
   # Should fail but with visible output
   [ "$status" -ne 0 ]
   [[ "$output" == *"not found"* ]]

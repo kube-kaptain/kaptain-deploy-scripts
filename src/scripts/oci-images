@@ -13,7 +13,7 @@ fi
 
 label="$1"
 
-base="${RUN_BASE_PATH:-/run}"
+base="${RUN_BASE_PATH:-/kd}"
 output_dir="${base}/work/oci-images"
 unsorted="${output_dir}/oci-images-${label}-unsorted"
 sorted="${output_dir}/oci-images-${label}-sorted"

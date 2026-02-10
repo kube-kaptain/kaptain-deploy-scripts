@@ -5,7 +5,7 @@
 # Prepare phase: copy manifests to writable work directory.
 set -euo pipefail
 
-base="${RUN_BASE_PATH:-/run}"
+base="${RUN_BASE_PATH:-/kd}"
 source_dir="${base}/manifests"
 work_dir="${base}/work/manifests"
 

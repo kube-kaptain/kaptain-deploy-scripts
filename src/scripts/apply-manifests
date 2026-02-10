@@ -6,7 +6,7 @@
 # Output captured to audit log for inspection if needed.
 set -euo pipefail
 
-base="${RUN_BASE_PATH:-/run}"
+base="${RUN_BASE_PATH:-/kd}"
 manifests_dir="${base}/work/manifests"
 audit_dir="${base}/work/audit"
 apply_log="${audit_dir}/apply.log"

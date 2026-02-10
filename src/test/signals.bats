@@ -41,7 +41,7 @@ teardown() {
   cat > "${TEST_MOCK_BIN}/k" << 'MOCK'
 #!/usr/bin/env bash
 echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"
-if [[ "$*" == *"apply -f"* ]] && [[ "$*" != *"--dry-run"* ]]; then
+if [[ "$*" == *"apply -R -f"* ]] && [[ "$*" != *"--dry-run"* ]]; then
   # Slow down the real apply to give time for signal
   sleep 1
 fi

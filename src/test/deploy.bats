@@ -72,9 +72,9 @@ teardown() {
   grep -q "apply --dry-run=server" "${TEST_RUN_BASE}/work/k-commands.log"
 }
 
-@test "deploy calls k apply -f for actual apply" {
+@test "deploy calls k apply -R -f for actual apply" {
   deploy
-  grep -q "apply -f" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q "apply -R -f" "${TEST_RUN_BASE}/work/k-commands.log"
   # Should have both dry-run and real apply
   local count
   count=$(grep -c "apply" "${TEST_RUN_BASE}/work/k-commands.log")

@@ -178,10 +178,10 @@ run decrypt-secrets
 run "${SCRIPT_DIR}/plugins/token-name-validators/${TOKEN_NAME_STYLE}" "${decrypted}"
 run assemble-secrets
 
-# TODO also record resource types so we can show what changes somehow 
+# TODO also record resource types so we can show what changes somehowe
 run oci-images "before"
 
-# TODO verify that the env is in a decent shape and note down details of bad stuff so we can ensre it hasn't gotten worse 
+# TODO verify that the env is in a decent shape and note down details of bad stuff so we can ensre it hasn't gotten worse
 
 change_phase false "Validating manifests"
 run validate-manifests

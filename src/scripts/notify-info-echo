@@ -15,5 +15,7 @@ fi
 
 message="$*"
 timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NOTIFY_CALLER_WIDTH=$(cat "${script_dir}/lib/notify-caller-width")
 
-echo "${timestamp} ${NOTIFY_CALLER:-UNKNOWN_CALLER}: ${message}"
+printf "%s %-${NOTIFY_CALLER_WIDTH}s %s\n" "${timestamp}" "${NOTIFY_CALLER:-UNKNOWN_CALLER}:" "${message}"

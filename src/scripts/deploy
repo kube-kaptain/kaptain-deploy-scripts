@@ -179,7 +179,7 @@ run "${SCRIPT_DIR}/plugins/token-name-validators/${TOKEN_NAME_STYLE}" "${decrypt
 run assemble-secrets
 
 # TODO also record resource types so we can show what changes somehowe
-run oci-images "before"
+run scan-images "before"
 
 # TODO verify that the env is in a decent shape and note down details of bad stuff so we can ensre it hasn't gotten worse
 
@@ -192,9 +192,9 @@ run apply-manifests
 # TODO verify things are happy after this action - await happiness - but don't accept increasing restarts on anything declared
 # TODO clean up stuff we don't have declared - leave the environment exactly as declared
 
-run oci-images "after"
+run scan-images "after"
 
-run notify-oci-images-changed
+run notify-images-changed
 
 elapsed=$(( $(date -u '+%s') - start_seconds ))
 notify-info "Deployment complete for ${ENVIRONMENT} version ${VERSION} in ${elapsed} seconds"

@@ -12,9 +12,10 @@ setup() {
   install_mock_k
   install_mock_notify
   install_mock_sleep
+  install_mock_interruptible_sleep
   install_mock_validate_container
-  install_mock_oci_images
-  install_mock_notify_oci_images_changed
+  install_mock_scan_images
+  install_mock_notify_images_changed
   copy_fixture_manifests
   copy_fixture_secrets
   export ENVIRONMENT="test-env"

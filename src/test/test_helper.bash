@@ -123,6 +123,22 @@ MOCK
   chmod +x "${TEST_MOCK_BIN}/sleep"
 }
 
+install_mock_interruptible_sleep() {
+  # Override interruptible_sleep function - returns immediately
+  interruptible_sleep() {
+    return 0
+  }
+  export -f interruptible_sleep
+}
+
+install_mock_interruptible_sleep_killer() {
+  # Override interruptible_sleep to kill process - for breaking infinite loops
+  interruptible_sleep() {
+    kill -KILL $$ 2>/dev/null
+  }
+  export -f interruptible_sleep
+}
+
 install_mock_validate_container() {
   cat > "${TEST_MOCK_BIN}/validate-container" << 'MOCK'
 #!/usr/bin/env bash
@@ -140,8 +156,8 @@ MOCK
   chmod +x "${TEST_MOCK_BIN}/validate_token_styles"
 }
 
-install_mock_oci_images() {
-  cat > "${TEST_MOCK_BIN}/oci-images" << 'MOCK'
+install_mock_scan_images() {
+  cat > "${TEST_MOCK_BIN}/scan-images" << 'MOCK'
 #!/usr/bin/env bash
 label="$1"
 output_dir="${RUN_BASE_PATH}/work/oci-images"
@@ -149,15 +165,15 @@ mkdir -p "${output_dir}"
 touch "${output_dir}/oci-images-${label}-unsorted"
 touch "${output_dir}/oci-images-${label}-sorted"
 MOCK
-  chmod +x "${TEST_MOCK_BIN}/oci-images"
+  chmod +x "${TEST_MOCK_BIN}/scan-images"
 }
 
-install_mock_notify_oci_images_changed() {
-  cat > "${TEST_MOCK_BIN}/notify-oci-images-changed" << 'MOCK'
+install_mock_notify_images_changed() {
+  cat > "${TEST_MOCK_BIN}/notify-images-changed" << 'MOCK'
 #!/usr/bin/env bash
 exit 0
 MOCK
-  chmod +x "${TEST_MOCK_BIN}/notify-oci-images-changed"
+  chmod +x "${TEST_MOCK_BIN}/notify-images-changed"
 }
 
 copy_fixture_manifests() {

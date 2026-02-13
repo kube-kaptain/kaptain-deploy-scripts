@@ -7,7 +7,7 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "Usage: oci-images <label>" >&2
+  echo "Usage: scan-images <label>" >&2
   exit 42
 fi
 

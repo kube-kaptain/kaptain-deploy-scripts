@@ -123,6 +123,22 @@ MOCK
   chmod +x "${TEST_MOCK_BIN}/sleep"
 }
 
+install_mock_interruptible_sleep() {
+  # Override interruptible_sleep function - returns immediately
+  interruptible_sleep() {
+    return 0
+  }
+  export -f interruptible_sleep
+}
+
+install_mock_interruptible_sleep_killer() {
+  # Override interruptible_sleep to kill process - for breaking infinite loops
+  interruptible_sleep() {
+    kill -KILL $$ 2>/dev/null
+  }
+  export -f interruptible_sleep
+}
+
 install_mock_validate_container() {
   cat > "${TEST_MOCK_BIN}/validate-container" << 'MOCK'
 #!/usr/bin/env bash

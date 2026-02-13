@@ -8,7 +8,7 @@ setup() {
   setup_test_dirs
   install_mock_k
   install_mock_notify
-  install_mock_sleep
+  install_mock_interruptible_sleep
   install_mock_validate_container
   install_mock_oci_images
   install_mock_notify_oci_images_changed
@@ -154,7 +154,7 @@ teardown() {
 }
 
 @test "deploy in deployment mode sleeps forever" {
-  install_mock_sleep_killer  # Need killer to break infinite loop
+  install_mock_interruptible_sleep_killer  # Need killer to break infinite loop
   export DEPLOY_MODE="deployment"
   run deploy
   [[ "$output" == *"sleeping forever"* ]]
@@ -188,7 +188,7 @@ MOCK
 }
 
 @test "deploy in deployment mode on error sleeps forever" {
-  install_mock_sleep_killer  # Need killer to break infinite loop
+  install_mock_interruptible_sleep_killer  # Need killer to break infinite loop
   export DEPLOY_MODE="deployment"
   # Make apply-manifests fail to trigger error handler
   cat > "${TEST_MOCK_BIN}/apply-manifests" << 'MOCK'

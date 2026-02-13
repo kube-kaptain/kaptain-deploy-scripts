@@ -12,6 +12,7 @@ setup() {
   install_mock_k
   install_mock_notify
   install_mock_sleep
+  install_mock_interruptible_sleep
   install_mock_validate_container
   install_mock_oci_images
   install_mock_notify_oci_images_changed

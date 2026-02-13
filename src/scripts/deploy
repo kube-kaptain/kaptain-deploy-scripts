@@ -11,10 +11,40 @@ UNINTERRUPTIBLE=false
 SHUTDOWN_REQUESTED=false
 ERROR_EXIT_CODE=0
 PHASE="Pre Validation"
+CHILD_PID=""
+RUN_COMMAND=""
 
 # Job mode sleep durations (seconds) - configurable via environment
 POST_DEPLOY_SLEEP_SUCCESS="${POST_DEPLOY_SLEEP_SUCCESS:-600}"    # 10 minutes
 POST_DEPLOY_SLEEP_FAILURE="${POST_DEPLOY_SLEEP_FAILURE:-86400}"  # 24 hours
+
+# Interruptible sleep using read builtin - signals interrupt immediately
+# unlike external sleep which blocks trap handlers until it completes.
+# Defined conditionally so tests can override via export -f.
+if ! declare -f interruptible_sleep > /dev/null 2>&1; then
+  interruptible_sleep() {
+    read -t "$1" -r || true
+  }
+fi
+
+# Run a command in the background and wait, allowing trap handlers to
+# fire immediately. The trap handler can then kill the child process.
+run() {
+  RUN_COMMAND="$*"
+  "$@" &
+  CHILD_PID=$!
+  local rc=0
+  while true; do
+    wait "${CHILD_PID}" && rc=0 || rc=$?
+    # kill -0 sends no signal - it just checks if the process is alive.
+    # If a trap handler returned without exiting, wait exits early but
+    # the child is still running, so we loop back and wait again.
+    kill -0 "${CHILD_PID}" 2>/dev/null || break
+  done
+  CHILD_PID=""
+  RUN_COMMAND=""
+  return ${rc}
+}
 
 change_phase() {
   if [[ "${SHUTDOWN_REQUESTED}" == "true" ]]; then
@@ -32,21 +62,29 @@ handle_term() {
     SHUTDOWN_REQUESTED=true
   else
     notify-info "SIGTERM received during ${PHASE} - shutting down"
+    if [[ -n "${CHILD_PID}" ]]; then
+      kill -9 "${CHILD_PID}" 2>/dev/null || true
+    fi
     exit "${ERROR_EXIT_CODE}"
   fi
 }
 trap 'handle_term' TERM
 
+# SIGINT for manual exec-in reruns, not needed for Kube, but should respect Ctrl+C, too
 handle_int() {
   notify-warning "SIGINT received - operator interference during ${PHASE}"
+  if [[ -n "${CHILD_PID}" ]]; then
+    kill -9 "${CHILD_PID}" 2>/dev/null || true
+  fi
   exit 130
 }
 trap 'handle_int' INT
 
 handle_err() {
   ERROR_EXIT_CODE=$?
+  UNINTERRUPTIBLE=false
   local line_no="${BASH_LINENO[0]}"
-  local command="${BASH_COMMAND}"
+  local command="${RUN_COMMAND:-${BASH_COMMAND}}"
 
   local error_type
   if [[ ${ERROR_EXIT_CODE} -ge 3 && ${ERROR_EXIT_CODE} -le 125 ]]; then
@@ -75,14 +113,13 @@ Check pod logs for more detail or exec in and inspect the audit directory."
   fi
 
   # Sleep behavior depends on DEPLOY_MODE
-  # shellcheck disable=SC2230 # Using which to get absolute path, bypassing any overrides
   # shellcheck disable=SC2154 # DEPLOY_MODE set by environment, validated by validate-environment
   if [[ "${DEPLOY_MODE}" == "deployment" ]]; then
     notify-info "Sleeping forever for inspection..."
-    while true; do "$(which sleep)" 3600; done
+    while true; do interruptible_sleep 3600; done
   else
     notify-info "Sleeping ${POST_DEPLOY_SLEEP_FAILURE}s before exit, to allow for inspection..."
-    "$(which sleep)" "${POST_DEPLOY_SLEEP_FAILURE}"
+    interruptible_sleep "${POST_DEPLOY_SLEEP_FAILURE}"
     exit ${ERROR_EXIT_CODE}
   fi
 }
@@ -133,31 +170,31 @@ mkdir -p "${audit}/kubectl"  # Optimise 'k' process
 find "${work}"
 
 change_phase false "Preparing manifests"
-prepare-manifests
+run prepare-manifests
 
 change_phase false "Processing secrets"
-decrypt-secrets
+run decrypt-secrets
 # shellcheck disable=SC2154 # TOKEN_NAME_STYLE set by environment build process
-"${SCRIPT_DIR}/plugins/token-name-validators/${TOKEN_NAME_STYLE}" "${decrypted}"
-assemble-secrets
+run "${SCRIPT_DIR}/plugins/token-name-validators/${TOKEN_NAME_STYLE}" "${decrypted}"
+run assemble-secrets
 
 # TODO also record resource types so we can show what changes somehow 
-oci-images "before"
+run oci-images "before"
 
 # TODO verify that the env is in a decent shape and note down details of bad stuff so we can ensre it hasn't gotten worse 
 
 change_phase false "Validating manifests"
-validate-manifests
+run validate-manifests
 
 change_phase true "Applying manifests"
-apply-manifests
+run apply-manifests
 # TODO apply in a more sophisticated way
 # TODO verify things are happy after this action - await happiness - but don't accept increasing restarts on anything declared
 # TODO clean up stuff we don't have declared - leave the environment exactly as declared
 
-oci-images "after"
+run oci-images "after"
 
-notify-oci-images-changed
+run notify-oci-images-changed
 
 elapsed=$(( $(date -u '+%s') - start_seconds ))
 notify-info "Deployment complete for ${ENVIRONMENT} version ${VERSION} in ${elapsed} seconds"
@@ -165,12 +202,11 @@ notify-info "Deployment complete for ${ENVIRONMENT} version ${VERSION} in ${elap
 change_phase false "Complete"
 
 # Sleep behavior depends on DEPLOY_MODE
-# shellcheck disable=SC2230 # Using which to get absolute path, bypassing any overrides
 # shellcheck disable=SC2154 # DEPLOY_MODE set by environment, validated by validate-environment
 if [[ "${DEPLOY_MODE}" == "deployment" ]]; then
   notify-info "Deployment complete - sleeping forever..."
-  while true; do "$(which sleep)" 3600; done
+  while true; do interruptible_sleep 3600; done
 else
   notify-info "Deployment complete - sleeping ${POST_DEPLOY_SLEEP_SUCCESS}s before exit..."
-  "$(which sleep)" "${POST_DEPLOY_SLEEP_SUCCESS}"
+  interruptible_sleep "${POST_DEPLOY_SLEEP_SUCCESS}"
 fi

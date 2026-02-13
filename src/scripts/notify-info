@@ -14,6 +14,21 @@ fi
 
 message="$*"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Identify calling script name for echo providers
+# Get parent's full command line, skip interpreter if present, basename it
+NOTIFY_CALLER=$(ps -o args= -p ${PPID} 2>/dev/null | # Full command line of the caller passed into awk:
+  awk '{
+         # Skip any interpreter, get the script path
+         cmd = ($1 ~ /(bash|sh)$/) ? $2 : $1
+
+         # Split the path on /
+         n = split(cmd, parts, "/")
+
+         # Print the last segment (the basename)
+         print parts[n]
+       }') || true
+export NOTIFY_CALLER="${NOTIFY_CALLER:-UNKNOWN_CALLER}"
 start_time=$(date +%s)
 threshold="${NOTIFY_TOO_SLOW_THRESHOLD:-10}"
 

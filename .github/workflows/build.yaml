@@ -8,13 +8,16 @@ on:
 
 jobs:
   build:
-    uses: kube-kaptain/buildon-github-actions/.github/workflows/docker-build-dockerfile.yaml@1.0.52
+    uses: kube-kaptain/buildon-github-actions/.github/workflows/docker-build-dockerfile.yaml@1.0.69
     permissions:
       contents: write
       packages: write
       checks: write
     with:
-      dockerfile-squash: false # FROM scratch - no point.
+      docker-platform: 'linux/amd64,linux/arm64'
+      dockerfile-sub-path-linux-amd64: 'src/docker'
+      dockerfile-sub-path-linux-arm64: 'src/docker'
+      dockerfile-squash: 'no' # FROM scratch - no point.
       qc-block-slash-containing-branches: true
       qc-block-conventional-commits: true
       hook-pre-tagging-tests-script-sub-path: bin/run-tests-all

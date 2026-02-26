@@ -6,12 +6,16 @@
 set -euo pipefail
 
 OUTPUT_SUB_PATH="${OUTPUT_SUB_PATH:?OUTPUT_SUB_PATH is required!}"
-DEST="${DOCKER_SUBSTITUTED_SUB_PATH}/scripts"
+DEST_AMD="${DOCKER_CONTEXT_SUB_PATH_LINUX_AMD64}/scripts"
+DEST_ARM="${DOCKER_CONTEXT_SUB_PATH_LINUX_ARM64}/scripts"
 
-mkdir -p "${DEST}"
-cp -a "src/scripts/." "${DEST}/"
+mkdir -p "${DEST_AMD}"
+mkdir -p "${DEST_ARM}"
+cp -a "src/scripts/." "${DEST_AMD}/"
+cp -a "src/scripts/." "${DEST_ARM}/"
 
-file_count=$(find "${DEST}" -type f | wc -l | tr -d ' ')
-echo "Copied ${file_count} scripts to ${DEST}"
+file_count_amd=$(find "${DEST_AMD}" -type f | wc -l | tr -d ' ')
+file_count_arm=$(find "${DEST_ARM}" -type f | wc -l | tr -d ' ')
+echo "Copied ${file_count_amd} scripts to ${DEST_AMD}"
+echo "Copied ${file_count_arm} scripts to ${DEST_ARM}"
 echo
-echo "What's actually available? Do we have to guess?" 

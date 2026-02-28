@@ -19,3 +19,11 @@ file_count_arm=$(find "${DEST_ARM}" -type f | wc -l | tr -d ' ')
 echo "Copied ${file_count_amd} scripts to ${DEST_AMD}"
 echo "Copied ${file_count_arm} scripts to ${DEST_ARM}"
 echo
+
+# Create zip of scripts for GitHub release attachment
+RELEASE_ZIP="${OUTPUT_SUB_PATH}/kaptain-deploy-scripts.zip"
+mkdir -p "${OUTPUT_SUB_PATH}"
+(cd src/scripts && zip -qr "../../${RELEASE_ZIP}" .)
+zip_count=$(unzip -l "${RELEASE_ZIP}" | tail -1 | awk '{print $2}')
+echo "Created ${RELEASE_ZIP} with ${zip_count} files"
+echo

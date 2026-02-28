@@ -22,3 +22,4 @@ jobs:
       qc-block-conventional-commits: true
       hook-pre-tagging-tests-script-sub-path: bin/run-tests-all
       hook-pre-docker-prepare-script-sub-path: bin/copy-scripts-for-docker
+      github-release-verbatim-files: 'target/kaptain-deploy-scripts.zip'

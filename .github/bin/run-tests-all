@@ -4,4 +4,11 @@
 #
 # Wrapper for hook-pre-tagging-tests to run the full test matrix.
 set -euo pipefail
+
+# Release builds already passed tests on the merge commit - skip re-running
+if [[ "${IS_RELEASE:-}" == "true" ]]; then
+  echo "Skipping tests: IS_RELEASE is true"
+  exit 0
+fi
+
 exec "$(dirname "${BASH_SOURCE[0]}")/run-tests" --all

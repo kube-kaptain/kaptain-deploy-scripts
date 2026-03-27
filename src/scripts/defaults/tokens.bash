@@ -12,6 +12,9 @@
 # How to handle trailing newlines when reading token value files
 CONFIG_VALUE_TRAILING_NEWLINE="${CONFIG_VALUE_TRAILING_NEWLINE:-strip-for-single-line}"
 
+# Number of token substitution passes (1 is sufficient for non-nested tokens)
+TOKEN_SUBSTITUTION_PASSES="${TOKEN_SUBSTITUTION_PASSES:-1}"
+
 # Required - checked by validate-container at launch time
 TOKEN_DELIMITER_STYLE="${TOKEN_DELIMITER_STYLE:-}"
 TOKEN_NAME_STYLE="${TOKEN_NAME_STYLE:-}"

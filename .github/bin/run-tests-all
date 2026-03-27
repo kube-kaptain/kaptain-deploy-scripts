@@ -11,4 +11,6 @@ if [[ "${IS_RELEASE:-}" == "true" ]]; then
   exit 0
 fi
 
+"$(dirname "${BASH_SOURCE[0]}")/resolve-shared-scripts-dependency.bash"
+
 exec "$(dirname "${BASH_SOURCE[0]}")/run-tests" --all

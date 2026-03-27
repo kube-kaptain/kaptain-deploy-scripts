@@ -15,6 +15,7 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Identify calling script name for echo provider
+# Duplicated in src/scripts/lib/log.bash - keep in sync
 # Get parent's full command line, skip interpreter if present, basename it
 NOTIFY_CALLER=$(ps -o args= -p ${PPID} 2>/dev/null | # Full command line of the caller passed into awk:
   awk '{

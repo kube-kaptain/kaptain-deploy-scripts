@@ -23,17 +23,17 @@ KUBE_MINOR_MIN=32
 KUBE_MINOR_MAX=35
 
 # Patch levels per distro (UBI lags behind by one point release)
-PATCH_alpine_3_23=6
-PATCH_trixie_slim=6
-PATCH_ubi_9_minimal=5
-PATCH_ubuntu_24_04_lts=6
+PATCH_alpine_3_23=8
+PATCH_trixie_slim=8
+PATCH_ubi_9_minimal=8
+PATCH_ubuntu_24_04_lts=8
 
 # Distros - must match Dockerfile template suffixes
 DISTROS="alpine-3-23 trixie-slim ubi-9-minimal ubuntu-24-04-lts"
 
 # Default mode: single quick validation
 DEFAULT_DISTRO="trixie-slim"
-DEFAULT_TAG="1.35.6"
+DEFAULT_TAG="1.35.8"
 
 # Counters
 FAILED=0
@@ -41,11 +41,25 @@ PASSED=0
 # Collected image IDs for cleanup
 BUILT_IDS=""
 
+# Container runtime - prefer podman, fall back to docker, fail if neither.
+# Override with CONTAINER_RUNTIME env var.
+if [[ -z "${CONTAINER_RUNTIME:-}" ]]; then
+  if command -v podman >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="podman"
+  elif command -v docker >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="docker"
+  else
+    echo "ERROR: neither 'podman' nor 'docker' found on PATH (or set CONTAINER_RUNTIME)" >&2
+    exit 1
+  fi
+fi
+export CONTAINER_RUNTIME
+
 cleanup() {
   if [[ -n "${BUILT_IDS}" ]]; then
     echo "Cleaning up test images..."
     for id in ${BUILT_IDS}; do
-      docker rmi -f "${id}" 2>/dev/null || true
+      "${CONTAINER_RUNTIME}" rmi -f "${id}" 2>/dev/null || true
     done
   fi
 }
@@ -140,7 +154,7 @@ run_shellcheck() {
   if command -v shellcheck >/dev/null 2>&1; then
     shellcheck ${enables} ${scripts}
   else
-    docker run --rm \
+    "${CONTAINER_RUNTIME}" run --rm \
       -v "${REPO_ROOT}:/workspace" \
       koalaman/shellcheck:v0.10.0 \
       ${enables} $(echo ${scripts} | sed "s|${REPO_ROOT}|/workspace|g")
@@ -173,7 +187,7 @@ build_test_image() {
 
   echo "  Building ${distro}:${tag}..." >&2
   local image_id
-  image_id=$(docker build -q --no-cache \
+  image_id=$("${CONTAINER_RUNTIME}" build -q --no-cache \
     -f "${BUILD_CONTEXT}/Dockerfile.${distro}" \
     "${BUILD_CONTEXT}")
 
@@ -192,13 +206,14 @@ run_tests_in_container() {
 
   echo "Running tests: ${label}"
 
-  if docker run --rm \
+  if "${CONTAINER_RUNTIME}" run --rm \
     -v "${SRC_DIR}/scripts:/kd/bin:ro" \
     -v "${SRC_DIR}/test:/kd/test:ro" \
     -v "${SRC_DIR}/test/fixtures/manifests:/kd/fixtures/manifests:ro" \
     -v "${SRC_DIR}/test/fixtures/secrets:/kd/fixtures/secrets:ro" \
     -v "${SRC_DIR}/test/fixtures/templates:/kd/fixtures/templates:ro" \
     -e "PATH=/kd/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    -e "CONTAINER_RUNTIME=${CONTAINER_RUNTIME}" \
     "${image_id}" \
     run-bats ${bats_args}; then
     echo "  PASSED: ${label}"

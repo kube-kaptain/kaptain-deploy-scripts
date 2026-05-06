@@ -14,6 +14,8 @@ setup() {
   # Create work subdirs that deploy normally creates
   mkdir -p "${TEST_RUN_BASE}/work/manifests"
   mkdir -p "${TEST_RUN_BASE}/work/audit/kubectl"
+  export ENVIRONMENT="test-env"
+  export ENVIRONMENT_TYPE="env"
 }
 
 teardown() {
@@ -49,7 +51,7 @@ teardown() {
   cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
   run validate-manifests
   [ "$status" -eq 0 ]
-  grep -q "apply --dry-run=server" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q "apply --dry-run=server --server-side --field-manager=kaptain/env/test-env -f" "${TEST_RUN_BASE}/work/k-commands.log"
 }
 
 @test "validate-manifests creates audit files" {
@@ -90,15 +92,13 @@ MOCK
 
 @test "apply-manifests calls k apply" {
   cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
-  export ENVIRONMENT="test-env"
   run apply-manifests
   [ "$status" -eq 0 ]
-  grep -q "apply -R -f" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q "apply --server-side --field-manager=kaptain/env/test-env -R -f" "${TEST_RUN_BASE}/work/k-commands.log"
 }
 
 @test "apply-manifests creates audit log" {
   cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
-  export ENVIRONMENT="test-env"
   run apply-manifests
   [ "$status" -eq 0 ]
   [ -f "${TEST_RUN_BASE}/work/audit/apply.log" ]
@@ -106,7 +106,6 @@ MOCK
 
 @test "apply-manifests notifies on success" {
   cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
-  export ENVIRONMENT="test-env"
   run apply-manifests
   [ "$status" -eq 0 ]
   [[ "$output" == *"Manifests applied"* ]]
@@ -114,11 +113,10 @@ MOCK
 
 @test "apply-manifests reports failure" {
   cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
-  export ENVIRONMENT="test-env"
   cat > "${TEST_MOCK_BIN}/k" << 'MOCK'
 #!/usr/bin/env bash
 echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"
-if [[ "$*" == *"apply -R -f"* ]] && [[ "$*" != *"--dry-run"* ]]; then
+if [[ "$*" == *"apply --server-side"* ]] && [[ "$*" != *"--dry-run"* ]]; then
   echo "apply error" >&2
   exit 1
 fi

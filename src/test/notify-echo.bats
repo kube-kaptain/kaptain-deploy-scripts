@@ -201,7 +201,7 @@ SCRIPTS_DIR="/kd/bin"
 
 @test "validate-environment produces error output when env vars missing" {
   # Unset required vars - validation SHOULD fail with visible error messages
-  unset DEPLOY_MODE ENVIRONMENT VERSION TOKEN_DELIMITER_STYLE TOKEN_NAME_STYLE
+  unset DEPLOY_MODE ENVIRONMENT ENVIRONMENT_TYPE VERSION TOKEN_DELIMITER_STYLE TOKEN_NAME_STYLE
   run bash -c 'exec /kd/bin/validate-environment'
   # Should fail (exit 44) but with visible output
   [ "$status" -ne 0 ]

@@ -18,7 +18,8 @@ setup() {
   install_mock_notify_images_changed
   copy_fixture_manifests
   copy_fixture_secrets
-  export ENVIRONMENT="test-env"
+  export ENVIRONMENT="run-test-env"
+  export ENVIRONMENT_TYPE="env"
   export VERSION="v1.0.0"
   export DEPLOY_MODE="job"
   export TOKEN_DELIMITER_STYLE="shell"
@@ -37,14 +38,22 @@ teardown() {
 }
 
 @test "deploy defers SIGTERM during uninterruptible phase" {
-  # This test verifies that SIGTERM during apply phase is deferred
-  # We need to make the mock k slow down during apply
+  # Marker-based synchronisation (no timing dependency):
+  #  1. mock k writes a marker when apply --server-side starts, then blocks
+  #     until the test removes it.
+  #  2. Test polls for marker, sends SIGTERM, removes marker.
+  #  3. mock k unblocks; deploy finishes the apply phase normally.
   cat > "${TEST_MOCK_BIN}/k" << 'MOCK'
 #!/usr/bin/env bash
 echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"
-if [[ "$*" == *"apply -R -f"* ]] && [[ "$*" != *"--dry-run"* ]]; then
-  # Slow down the real apply to give time for signal
-  sleep 1
+if [[ "$*" == *"apply --server-side"* ]] && [[ "$*" != *"--dry-run"* ]]; then
+  marker="${RUN_BASE_PATH}/work/apply-phase-entered"
+  : > "${marker}"
+  i=0
+  while [[ -f "${marker}" ]] && [[ ${i} -lt 300 ]]; do
+    /bin/sleep 0.1
+    i=$((i + 1))
+  done
 fi
 echo "mock: $*"
 MOCK
@@ -54,11 +63,26 @@ MOCK
   deploy &
   local deploy_pid=$!
 
-  # Wait for it to reach apply phase
-  sleep 0.5
+  # Poll for the apply-phase marker (deterministic, no fixed sleep)
+  local marker="${TEST_RUN_BASE}/work/apply-phase-entered"
+  local i=0
+  while [[ ! -f "${marker}" ]] && [[ ${i} -lt 300 ]]; do
+    /bin/sleep 0.1
+    i=$((i + 1))
+  done
+  if [[ ! -f "${marker}" ]]; then
+    kill -KILL "${deploy_pid}" 2>/dev/null || true
+    false
+  fi
 
-  # Send SIGTERM
+  # In the apply phase now - send SIGTERM (must be deferred)
   kill -TERM "${deploy_pid}" 2>/dev/null || true
+
+  # Tiny pause so the SIGTERM handler runs before mock k completes
+  /bin/sleep 0.1
+
+  # Release mock k so the apply call can return
+  rm -f "${marker}"
 
   # Wait for completion
   wait "${deploy_pid}" 2>/dev/null || true

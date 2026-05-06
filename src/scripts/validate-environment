@@ -24,6 +24,32 @@ if [[ -z "${ENVIRONMENT:-}" ]]; then
   failures=$((failures + 1))
 fi
 
+if [[ -z "${ENVIRONMENT_TYPE:-}" ]]; then
+  notify-error "ENVIRONMENT_TYPE must be set"
+  failures=$((failures + 1))
+elif [[ "${ENVIRONMENT_TYPE}" != "env" && "${ENVIRONMENT_TYPE}" != "meta-env" ]]; then
+  notify-error "ENVIRONMENT_TYPE must be 'env' or 'meta-env', got '${ENVIRONMENT_TYPE}'"
+  failures=$((failures + 1))
+else
+  case "${ENVIRONMENT_TYPE}" in
+    env)
+      if [[ "${ENVIRONMENT:-}" =~ ^run-platform(-|$) ]]; then
+        notify-error "ENVIRONMENT '${ENVIRONMENT}' for ENVIRONMENT_TYPE=env must not start with 'run-platform-' (that is reserved for meta-env)"
+        failures=$((failures + 1))
+      elif ! [[ "${ENVIRONMENT:-}" =~ ^run-[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+        notify-error "ENVIRONMENT '${ENVIRONMENT:-}' for ENVIRONMENT_TYPE=env must match 'run-<name>[-<more>...]' with lowercase alphanumeric kebab segments"
+        failures=$((failures + 1))
+      fi
+      ;;
+    meta-env)
+      if ! [[ "${ENVIRONMENT:-}" =~ ^run-platform-[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+        notify-error "ENVIRONMENT '${ENVIRONMENT:-}' for ENVIRONMENT_TYPE=meta-env must match 'run-platform-<name>[-<more>...]' with lowercase alphanumeric kebab segments"
+        failures=$((failures + 1))
+      fi
+      ;;
+  esac
+fi
+
 if [[ -z "${VERSION:-}" ]]; then
   notify-error "VERSION must be set"
   failures=$((failures + 1))

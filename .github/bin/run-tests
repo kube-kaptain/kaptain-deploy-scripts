@@ -213,6 +213,7 @@ run_tests_in_container() {
     -v "${SRC_DIR}/test/fixtures/secrets:/kd/fixtures/secrets:ro" \
     -v "${SRC_DIR}/test/fixtures/templates:/kd/fixtures/templates:ro" \
     -e "PATH=/kd/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    -e "CONTAINER_RUNTIME=${CONTAINER_RUNTIME}" \
     "${image_id}" \
     run-bats ${bats_args}; then
     echo "  PASSED: ${label}"

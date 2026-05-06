@@ -15,7 +15,8 @@ setup() {
   copy_fixture_manifests
   copy_fixture_templates
   copy_fixture_secrets
-  export ENVIRONMENT="test-env"
+  export ENVIRONMENT="run-test-env"
+  export ENVIRONMENT_TYPE="env"
   export VERSION="v1.0.0"
   export DEPLOY_MODE="job"
   export TOKEN_DELIMITER_STYLE="shell"
@@ -66,15 +67,15 @@ teardown() {
   [[ "${result}" == *"sk-test-key-abc-456"* ]]
 }
 
-@test "deploy calls k apply --dry-run=server for validation" {
+@test "deploy calls k apply --dry-run=server --server-side for validation" {
   deploy
   [ -f "${TEST_RUN_BASE}/work/k-commands.log" ]
-  grep -q "apply --dry-run=server" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q "apply --dry-run=server --server-side --field-manager=kaptain/env/run-test-env -f" "${TEST_RUN_BASE}/work/k-commands.log"
 }
 
-@test "deploy calls k apply -R -f for actual apply" {
+@test "deploy calls k apply --server-side -R -f for actual apply" {
   deploy
-  grep -q "apply -R -f" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q "apply --server-side --field-manager=kaptain/env/run-test-env -R -f" "${TEST_RUN_BASE}/work/k-commands.log"
   # Should have both dry-run and real apply
   local count
   count=$(grep -c "apply" "${TEST_RUN_BASE}/work/k-commands.log")
@@ -90,7 +91,7 @@ teardown() {
 
 @test "deploy logs environment name" {
   run deploy
-  [[ "$output" == *"test-env"* ]]
+  [[ "$output" == *"run-test-env"* ]]
 }
 
 @test "deploy logs version" {
@@ -130,12 +131,12 @@ teardown() {
 
 @test "deploy notifies start with timestamp" {
   run deploy
-  [[ "$output" == *"Starting test-env version v1.0.0"* ]]
+  [[ "$output" == *"Starting run-test-env version v1.0.0"* ]]
 }
 
 @test "deploy notifies completion" {
   run deploy
-  [[ "$output" == *"Deployment complete for test-env"* ]]
+  [[ "$output" == *"Deployment complete for run-test-env"* ]]
 }
 
 # Mode-specific behavior tests

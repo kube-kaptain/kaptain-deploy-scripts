@@ -30,7 +30,7 @@ for manifest in "${manifests_dir}"/**/*.yaml; do
 
   scanned=$((scanned + 1))
 
-  if k apply --dry-run=server -f "${manifest}" > "${audit_file}" 2>&1; then
+  if k apply --dry-run=server --server-side --field-manager="kaptain/${ENVIRONMENT_TYPE:-}/${ENVIRONMENT:-}" -f "${manifest}" > "${audit_file}" 2>&1; then
     passed=$((passed + 1))
   else
     failed=$((failed + 1))

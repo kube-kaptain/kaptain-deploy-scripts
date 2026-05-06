@@ -23,17 +23,17 @@ KUBE_MINOR_MIN=32
 KUBE_MINOR_MAX=35
 
 # Patch levels per distro (UBI lags behind by one point release)
-PATCH_alpine_3_23=6
-PATCH_trixie_slim=6
-PATCH_ubi_9_minimal=5
-PATCH_ubuntu_24_04_lts=6
+PATCH_alpine_3_23=8
+PATCH_trixie_slim=8
+PATCH_ubi_9_minimal=8
+PATCH_ubuntu_24_04_lts=8
 
 # Distros - must match Dockerfile template suffixes
 DISTROS="alpine-3-23 trixie-slim ubi-9-minimal ubuntu-24-04-lts"
 
 # Default mode: single quick validation
 DEFAULT_DISTRO="trixie-slim"
-DEFAULT_TAG="1.35.6"
+DEFAULT_TAG="1.35.8"
 
 # Counters
 FAILED=0

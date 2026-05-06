@@ -17,11 +17,22 @@ setup() {
   if [[ -z "${SCRIPTS_DIR:-}" ]]; then
     skip "SCRIPTS_DIR not set"
   fi
+  # Container runtime - prefer podman, fall back to docker.
+  # Override with CONTAINER_RUNTIME env var.
+  if [[ -z "${CONTAINER_RUNTIME:-}" ]]; then
+    if command -v podman >/dev/null 2>&1; then
+      CONTAINER_RUNTIME="podman"
+    elif command -v docker >/dev/null 2>&1; then
+      CONTAINER_RUNTIME="docker"
+    else
+      skip "neither 'podman' nor 'docker' found on PATH (or set CONTAINER_RUNTIME)"
+    fi
+  fi
 }
 
 # Helper to run script as container entrypoint with scripts mounted
 run_as_entrypoint() {
-  docker run --rm \
+  "${CONTAINER_RUNTIME}" run --rm \
     -v "${SCRIPTS_DIR}:/kd/bin:ro" \
     -e "PATH=/kd/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     "$@"
@@ -100,7 +111,7 @@ run_as_entrypoint() {
 }
 
 @test "validate-container shows errors when mounts missing" {
-  run docker run --rm \
+  run "${CONTAINER_RUNTIME}" run --rm \
     -v "${SCRIPTS_DIR}:/kd/bin:ro" \
     -e "PATH=/kd/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     -e "MOUNT_BASE_PATH=/nonexistent" \

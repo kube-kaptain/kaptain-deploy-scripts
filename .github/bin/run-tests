@@ -41,11 +41,25 @@ PASSED=0
 # Collected image IDs for cleanup
 BUILT_IDS=""
 
+# Container runtime - prefer podman, fall back to docker, fail if neither.
+# Override with CONTAINER_RUNTIME env var.
+if [[ -z "${CONTAINER_RUNTIME:-}" ]]; then
+  if command -v podman >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="podman"
+  elif command -v docker >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="docker"
+  else
+    echo "ERROR: neither 'podman' nor 'docker' found on PATH (or set CONTAINER_RUNTIME)" >&2
+    exit 1
+  fi
+fi
+export CONTAINER_RUNTIME
+
 cleanup() {
   if [[ -n "${BUILT_IDS}" ]]; then
     echo "Cleaning up test images..."
     for id in ${BUILT_IDS}; do
-      docker rmi -f "${id}" 2>/dev/null || true
+      "${CONTAINER_RUNTIME}" rmi -f "${id}" 2>/dev/null || true
     done
   fi
 }
@@ -140,7 +154,7 @@ run_shellcheck() {
   if command -v shellcheck >/dev/null 2>&1; then
     shellcheck ${enables} ${scripts}
   else
-    docker run --rm \
+    "${CONTAINER_RUNTIME}" run --rm \
       -v "${REPO_ROOT}:/workspace" \
       koalaman/shellcheck:v0.10.0 \
       ${enables} $(echo ${scripts} | sed "s|${REPO_ROOT}|/workspace|g")
@@ -173,7 +187,7 @@ build_test_image() {
 
   echo "  Building ${distro}:${tag}..." >&2
   local image_id
-  image_id=$(docker build -q --no-cache \
+  image_id=$("${CONTAINER_RUNTIME}" build -q --no-cache \
     -f "${BUILD_CONTEXT}/Dockerfile.${distro}" \
     "${BUILD_CONTEXT}")
 
@@ -192,7 +206,7 @@ run_tests_in_container() {
 
   echo "Running tests: ${label}"
 
-  if docker run --rm \
+  if "${CONTAINER_RUNTIME}" run --rm \
     -v "${SRC_DIR}/scripts:/kd/bin:ro" \
     -v "${SRC_DIR}/test:/kd/test:ro" \
     -v "${SRC_DIR}/test/fixtures/manifests:/kd/fixtures/manifests:ro" \

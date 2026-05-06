@@ -11,7 +11,7 @@
 # Run locally to update vendored files after bumping KaptainSharedScriptsVersion.
 # Run in CI (pre-tagging tests) as an integrity check.
 #
-# Requires: docker (or IMAGE_BUILD_COMMAND if set), git, OUTPUT_SUB_PATH
+# Requires: podman or docker (or IMAGE_BUILD_COMMAND if set), git, OUTPUT_SUB_PATH
 #
 set -euo pipefail
 
@@ -29,7 +29,16 @@ fi
 
 VERSION_FILE="src/config/KaptainSharedScriptsVersion"
 
-IMAGE_BUILD_COMMAND="${IMAGE_BUILD_COMMAND:-docker}"
+if [[ -z "${IMAGE_BUILD_COMMAND:-}" ]]; then
+  if command -v podman >/dev/null 2>&1; then
+    IMAGE_BUILD_COMMAND="podman"
+  elif command -v docker >/dev/null 2>&1; then
+    IMAGE_BUILD_COMMAND="docker"
+  else
+    echo "ERROR: neither 'podman' nor 'docker' found on PATH (or set IMAGE_BUILD_COMMAND)" >&2
+    exit 1
+  fi
+fi
 export IMAGE_BUILD_COMMAND
 
 OUTPUT_SUB_PATH="${OUTPUT_SUB_PATH:-target}"

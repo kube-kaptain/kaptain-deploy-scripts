@@ -4,8 +4,8 @@
 #
 # Common test helper for BATS tests.
 
-SCRIPTS_DIR="/kd/bin"
-FIXTURES_DIR="/kd/fixtures"
+SCRIPTS_DIR="${SCRIPTS_DIR:-/kd/bin}"
+FIXTURES_DIR="${FIXTURES_DIR:-/kd/fixtures}"
 
 setup_test_dirs() {
   # Create base directories for RUN_BASE_PATH structure

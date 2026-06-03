@@ -20,10 +20,25 @@ POST_DEPLOY_SLEEP_FAILURE="${POST_DEPLOY_SLEEP_FAILURE:-86400}"  # 24 hours
 
 # Interruptible sleep using read builtin - signals interrupt immediately
 # unlike external sleep which blocks trap handlers until it completes.
+# fd 9 holds a self-referencing FIFO (writer never closes) so read -t blocks
+# for the full timeout; without it stdin is /dev/null in a no-TTY pod and
+# read returns instantly on EOF, spinning any surrounding while-loop at 100% CPU.
 # Defined conditionally so tests can override via export -f.
 if ! declare -f interruptible_sleep > /dev/null 2>&1; then
+  # Reserve an unused path for the FIFO without creating anything yet.
+  sleep_fifo="$(mktemp -u)"
+  # Create the FIFO at that path.
+  mkfifo "${sleep_fifo}"
+  # Open fd 9 for both read AND write on the FIFO; the write side keeps the
+  # FIFO from ever signalling EOF to the read side, so read -t can block.
+  exec 9<>"${sleep_fifo}"
+  # Unlink the path now - fd 9 keeps the FIFO alive in the kernel after removal
+  rm -f "${sleep_fifo}"
+  # Drop the variable since fd 9 is the only handle we need from here on.
+  unset sleep_fifo
+
   interruptible_sleep() {
-    read -t "$1" -r || true
+    read -t "$1" -r -u 9 || true
   }
 fi
 

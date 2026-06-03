@@ -1,0 +1,22 @@
+apiVersion: kaptain.org/1.19
+kind: docker-build-dockerfile
+metadata:
+  description: "Kaptain deployment scripts packaged as OCI image"
+
+spec:
+  layers:
+    - layer-github-flow-strict:[1.3,2.0)
+  main:
+    docker:
+      platform: linux/amd64,linux/arm64
+      dockerfile:
+        subPathLinuxAmd64: src/docker
+        subPathLinuxArm64: src/docker
+        squash: 'no'  # FROM scratch - no point.
+    hooks:
+      preTaggingTests: .github/bin/run-tests-all
+      preDockerPrepare: .github/bin/copy-scripts-for-docker
+  platform:
+    githubActions:
+      release:
+        verbatimFiles: kaptain-out/kaptain-deploy-scripts.zip

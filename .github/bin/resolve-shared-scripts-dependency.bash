@@ -24,7 +24,7 @@ if [[ -n "${KAPTAIN_BUILD_SCRIPTS_REPO_ROOT:-}" ]]; then
   trap 'git -C "${KAPTAIN_BUILD_SCRIPTS_REPO_ROOT}" worktree remove --force kaptain-out/build-scripts 2>/dev/null || true' EXIT
   EXTRACT_SCRIPT="${BUILD_SCRIPTS_WORKTREE}/src/scripts/util/extract-oci-image"
 else
-  EXTRACT_SCRIPT=".github/buildon-github-actions/src/scripts/util/extract-oci-image"
+  EXTRACT_SCRIPT="${BUILD_SCRIPTS_REPO_ROOT:?BUILD_SCRIPTS_REPO_ROOT is required (set by build wrapper or KAPTAIN_BUILD_SCRIPTS_REPO_ROOT for local pinning)}/src/scripts/util/extract-oci-image"
 fi
 
 VERSION_FILE="src/config/KaptainSharedScriptsVersion"

@@ -1,0 +1,25 @@
+apiVersion: kaptain.org/1.28
+kind: kubernetes-run-environment
+metadata:
+  description: Example environment cleanup policy used by the deploy script tests
+spec:
+  main:
+    environment:
+      cleanUp:
+        policy: enabled
+        additionalResources:
+          - kind: ConfigMap
+            name: "cert-manager-*"
+          - kind: Secret
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/managed-by: cert-manager
+        accumulatingResources:
+          jobs:
+            type: count
+            count: 5
+          configmaps:
+            type: age
+            age: 30d
+          secrets:
+            type: none

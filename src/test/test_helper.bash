@@ -176,6 +176,29 @@ MOCK
   chmod +x "${TEST_MOCK_BIN}/notify-images-changed"
 }
 
+# The cleanup policy ConfigMap as the env or RP build writes it into the image:
+# the policy document under one key, the schema it was validated against under
+# the other. Both default to the fixtures - a real KaptainPM schema and a
+# document that validates against it - and either can be overridden to exercise
+# a failure.
+write_cleanup_policy_configmap() {
+  local document="${1-$(cat "${FIXTURES_DIR}/cleanup/cleanup-policy.yaml")}"
+  local schema="${2-$(cat "${FIXTURES_DIR}/cleanup/kaptainpm-schema.json")}"
+  local manifest="${RUN_BASE_PATH}/manifests/kaptain-environment-cleanup-policy.yaml"
+  mkdir -p "${RUN_BASE_PATH}/manifests"
+  {
+    echo "apiVersion: v1"
+    echo "kind: ConfigMap"
+    echo "metadata:"
+    echo "  name: run-test-env-cleanup-policy"
+    echo "data:"
+    echo "  cleanup-policy.yaml: |"
+    sed "s/^/    /" <<< "${document}"
+    echo "  kaptainpm-schema.json: |"
+    sed "s/^/    /" <<< "${schema}"
+  } > "${manifest}"
+}
+
 copy_fixture_manifests() {
   cp "${FIXTURES_DIR}/manifests/"* "${TEST_RUN_BASE}/manifests/"
 }

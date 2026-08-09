@@ -31,13 +31,6 @@ teardown() {
   [ -f "${TEST_RUN_BASE}/work/manifests/deployment.yaml" ]
 }
 
-@test "prepare-manifests fails if source dir missing" {
-  rm -rf "${TEST_RUN_BASE}/manifests"
-  run prepare-manifests
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"does not exist"* ]]
-}
-
 @test "prepare-manifests fails if work dir missing" {
   rm -rf "${TEST_RUN_BASE}/work/manifests"
   run prepare-manifests

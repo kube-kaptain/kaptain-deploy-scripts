@@ -15,6 +15,8 @@ setup() {
   copy_fixture_manifests
   copy_fixture_templates
   copy_fixture_secrets
+  # deploy runs the real validate-environment, which requires this ConfigMap
+  write_cleanup_policy_configmap
   export ENVIRONMENT="run-test-env"
   export ENVIRONMENT_TYPE="env"
   export VERSION="v1.0.0"
@@ -99,10 +101,11 @@ teardown() {
   [[ "$output" == *"v1.0.0"* ]]
 }
 
-@test "deploy fails if manifests source dir missing" {
+@test "deploy fails validation if manifests source dir missing" {
   rm -rf "${TEST_RUN_BASE}/manifests"
   run deploy
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 44 ]
+  [[ "$output" == *"Manifests directory not found"* ]]
 }
 
 @test "deploy succeeds with no secrets" {

@@ -42,6 +42,7 @@ check_binary age
 check_binary age-keygen
 check_binary openssl
 check_binary yq
+check_binary jv
 
 echo ""
 echo "GNU utilities:"

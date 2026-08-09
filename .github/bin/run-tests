@@ -22,18 +22,18 @@ IMAGE_PREFIX="image-environment-base"
 KUBE_MINOR_MIN=32
 KUBE_MINOR_MAX=35
 
-# Patch levels per distro (UBI lags behind by one point release)
-PATCH_alpine_3_23=8
-PATCH_trixie_slim=8
-PATCH_ubi_9_minimal=8
-PATCH_ubuntu_24_04_lts=8
+# Patch levels per distro
+PATCH_alpine_3_23=10
+PATCH_trixie_slim=10
+PATCH_ubi_9_minimal=10
+PATCH_ubuntu_24_04_lts=10
 
 # Distros - must match Dockerfile template suffixes
 DISTROS="alpine-3-23 trixie-slim ubi-9-minimal ubuntu-24-04-lts"
 
 # Default mode: single quick validation
 DEFAULT_DISTRO="trixie-slim"
-DEFAULT_TAG="1.35.8"
+DEFAULT_TAG="1.35.10"
 
 # Counters
 FAILED=0
@@ -209,6 +209,7 @@ run_tests_in_container() {
   if "${CONTAINER_RUNTIME}" run --rm \
     -v "${SRC_DIR}/scripts:/kd/bin:ro" \
     -v "${SRC_DIR}/test:/kd/test:ro" \
+    -v "${SRC_DIR}/test/fixtures/cleanup:/kd/fixtures/cleanup:ro" \
     -v "${SRC_DIR}/test/fixtures/manifests:/kd/fixtures/manifests:ro" \
     -v "${SRC_DIR}/test/fixtures/secrets:/kd/fixtures/secrets:ro" \
     -v "${SRC_DIR}/test/fixtures/templates:/kd/fixtures/templates:ro" \

@@ -18,6 +18,8 @@ setup() {
   install_mock_notify_images_changed
   copy_fixture_manifests
   copy_fixture_secrets
+  # deploy runs the real validate-environment, which requires this ConfigMap
+  write_cleanup_policy_configmap
   export ENVIRONMENT="run-test-env"
   export ENVIRONMENT_TYPE="env"
   export VERSION="v1.0.0"

@@ -28,6 +28,20 @@ if [[ ! -f "${mount_base}/secret/environmentPassphrase" ]]; then
   failures=$((failures + 1))
 fi
 
+# Extract the pre-validated cleanup policy and schema for potential validation and later use
+cleanup_policy_manifest="${RUN_BASE_PATH:-/kd}/manifests/kaptain-environment-cleanup-policy.yaml"
+cleanup_dir="${RUN_BASE_PATH:-/kd}/work/cleanup"
+mkdir -p "${cleanup_dir}"
+for cleanup_key in cleanup-policy.yaml kaptainpm-schema.json; do
+  yq -e -r ".data[\"${cleanup_key}\"]" "${cleanup_policy_manifest}" > "${cleanup_dir}/${cleanup_key}"
+done
+
+# Cleanup policy must be valid
+if ! jv "${cleanup_dir}/kaptainpm-schema.json" "${cleanup_dir}/cleanup-policy.yaml"; then
+  notify-error "Cleanup policy document does not validate against the schema it was built with"
+  failures=$((failures + 1))
+fi
+
 # Run plugin validators
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 shopt -s nullglob

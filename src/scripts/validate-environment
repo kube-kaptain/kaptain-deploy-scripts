@@ -65,6 +65,38 @@ if [[ -z "${TOKEN_NAME_STYLE:-}" ]]; then
   failures=$((failures + 1))
 fi
 
+# Cannot deploy anything if there are no manifests
+manifests_dir="${RUN_BASE_PATH:-/kd}/manifests"
+if [[ ! -d "${manifests_dir}" ]]; then
+  notify-error "Manifests directory not found at ${manifests_dir}"
+  failures=$((failures + 1))
+fi
+
+# Cleanup configuration isn't supplied via env var since it's structured data.
+# It is written into the image by the env or RP build and must be present. The
+# ConfigMap has two keys, the configuration as lifted from the env's KaptainPM
+# YAML file and the matching schema used to validate it during the build. Only
+# presence is verified here since already validated before inclusion. A recheck
+# is done at runtime using a light weight go schema validator called jv.
+cleanup_policy_manifest="${manifests_dir}/kaptain-environment-cleanup-policy.yaml"
+
+if [[ ! -f "${cleanup_policy_manifest}" ]]; then
+  notify-error "Cleanup policy ConfigMap not found at ${cleanup_policy_manifest}"
+  failures=$((failures + 1))
+else
+  # Both keys must exist and be non-empty. The cleanup-policy document always
+  # carries at least apiVersion, kind and its one spec section.
+  for cleanup_key in cleanup-policy.yaml kaptainpm-schema.json; do
+    if ! yq -e ".data | has(\"${cleanup_key}\")" "${cleanup_policy_manifest}" > /dev/null 2>&1; then
+      notify-error "Cleanup policy ConfigMap at ${cleanup_policy_manifest} has no '${cleanup_key}' data key"
+      failures=$((failures + 1))
+    elif [[ -z "$(yq -r ".data[\"${cleanup_key}\"] // \"\"" "${cleanup_policy_manifest}" 2>/dev/null || true)" ]]; then
+      notify-error "Cleanup policy ConfigMap key '${cleanup_key}' is empty"
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 # Run plugin validators
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 shopt -s nullglob

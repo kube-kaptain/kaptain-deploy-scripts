@@ -18,22 +18,17 @@ BUILD_CONTEXT="${REPO_ROOT}/target/docker"
 REGISTRY="ghcr.io/kube-kaptain/image"
 IMAGE_PREFIX="image-environment-base"
 
-# Kubectl minor version range
-KUBE_MINOR_MIN=32
-KUBE_MINOR_MAX=35
-
-# Patch levels per distro
-PATCH_alpine_3_23=10
-PATCH_trixie_slim=10
-PATCH_ubi_9_minimal=10
-PATCH_ubuntu_24_04_lts=10
+# Kubectl tags to test: the newest patch of each supported minor. Patch levels
+# do not line up across minors, so they are listed rather than derived from a
+# range. All distros carry the same patch for a given minor.
+KUBE_TAGS="1.33.10 1.34.10 1.35.10 1.36.1"
 
 # Distros - must match Dockerfile template suffixes
 DISTROS="alpine-3-23 trixie-slim ubi-9-minimal ubuntu-24-04-lts"
 
 # Default mode: single quick validation
 DEFAULT_DISTRO="trixie-slim"
-DEFAULT_TAG="1.35.10"
+DEFAULT_TAG="1.36.1"
 
 # Counters
 FAILED=0
@@ -167,6 +162,9 @@ prepare_build_context() {
   rm -rf "${BUILD_CONTEXT}"
   mkdir -p "${BUILD_CONTEXT}"
   cp "${TEMPLATES_DIR}/run-bats.bash" "${BUILD_CONTEXT}/"
+  # Scripts are baked into /kd/bin by the test images, exactly as a deploy image
+  # build does it, so tests see the layout that actually ships
+  cp -R "${SRC_DIR}/scripts" "${BUILD_CONTEXT}/"
 }
 
 generate_dockerfile() {
@@ -207,7 +205,6 @@ run_tests_in_container() {
   echo "Running tests: ${label}"
 
   if "${CONTAINER_RUNTIME}" run --rm \
-    -v "${SRC_DIR}/scripts:/kd/bin:ro" \
     -v "${SRC_DIR}/test:/kd/test:ro" \
     -v "${SRC_DIR}/test/fixtures/cleanup:/kd/fixtures/cleanup:ro" \
     -v "${SRC_DIR}/test/fixtures/manifests:/kd/fixtures/manifests:ro" \
@@ -226,28 +223,16 @@ run_tests_in_container() {
   echo ""
 }
 
-patch_for_distro() {
-  local distro="$1"
-  # Bash 3.2 compatible: no associative arrays
-  local key
-  key="PATCH_$(echo "${distro}" | tr '-' '_')"
-  eval "echo \${${key}}"
-}
-
 run_matrix() {
   for distro in ${DISTROS}; do
     echo "--- Distro: ${distro} ---"
-    local patch
-    patch=$(patch_for_distro "${distro}")
-    local minor=${KUBE_MINOR_MIN}
-    while [[ ${minor} -le ${KUBE_MINOR_MAX} ]]; do
-      local tag="1.${minor}.${patch}"
+    local tag
+    for tag in ${KUBE_TAGS}; do
       local base_image="${REGISTRY}/${IMAGE_PREFIX}-${distro}:${tag}"
       local image_id
       image_id=$(build_test_image "${distro}" "${tag}")
       run_tests_in_container "${image_id}" "${distro}:${tag}"
       run_host_side_tests "${base_image}" "${distro}:${tag}"
-      minor=$((minor + 1))
     done
   done
 }
@@ -303,7 +288,7 @@ main() {
       --help|-h)
         echo "Usage: run-tests [--all] [--one <name>]"
         echo "  Default: runs ${DEFAULT_DISTRO}:${DEFAULT_TAG} only"
-        echo "  --all:   runs full matrix (all distros × kubectl 1.${KUBE_MINOR_MIN}-1.${KUBE_MINOR_MAX})"
+        echo "  --all:   runs full matrix (all distros × kubectl ${KUBE_TAGS})"
         echo "  --one:   run only the named .bats file (without .bats extension)"
         exit 0
         ;;
@@ -317,7 +302,7 @@ main() {
   fi
   if [[ "${run_all}" == "true" ]]; then
     echo "Mode: full matrix"
-    echo "kubectl versions: 1.${KUBE_MINOR_MIN} - 1.${KUBE_MINOR_MAX}"
+    echo "kubectl versions: ${KUBE_TAGS}"
   else
     echo "Mode: default (${DEFAULT_DISTRO}:${DEFAULT_TAG})"
   fi

@@ -29,6 +29,10 @@ Three validation scripts are included in this package:
 2. `validate-environment` - runs after an environment build before publishing
 3. `validate-container` - runs only during execution of the end user image
 
+The environment build runs `validate-environment --notify-echo-only`, which
+keeps chat notification providers out of a build job where none of them have
+credentials to work with. See Echo-Only Mode in `Deploy.md`.
+
 The deploy script runs all three in sequence so you've got maximum coverage as
 late in the piece as possible. The `validate-environment` script cannot be run
 until the final environment image is built so it's only valid then and at

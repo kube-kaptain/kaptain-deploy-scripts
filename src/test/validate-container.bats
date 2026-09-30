@@ -62,6 +62,22 @@ MOCK
   [[ "$output" == *"environmentPassphrase not found"* ]]
 }
 
+@test "validate-container fails when NOTIFY_ECHO_ONLY is set" {
+  echo "test-passphrase" > "${TEST_MOUNT_BASE}/secret/environmentPassphrase"
+  export NOTIFY_ECHO_ONLY=true
+  run validate-container
+  [ "$status" -eq 44 ]
+  [[ "$output" == *"NOTIFY_ECHO_ONLY is set at runtime"* ]]
+}
+
+@test "validate-container fails when NOTIFY_ECHO_ONLY is set to anything at all" {
+  echo "test-passphrase" > "${TEST_MOUNT_BASE}/secret/environmentPassphrase"
+  export NOTIFY_ECHO_ONLY=false
+  run validate-container
+  [ "$status" -eq 44 ]
+  [[ "$output" == *"NOTIFY_ECHO_ONLY is set at runtime"* ]]
+}
+
 @test "validate-container counts multiple failures" {
   rm -rf "${TEST_MOUNT_BASE}/secret"
   rmdir "${TEST_MOUNT_BASE}/configmap"

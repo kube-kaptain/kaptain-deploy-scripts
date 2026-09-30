@@ -3,3 +3,8 @@
 FROM {{BASE_IMAGE}}
 RUN apt-get update && apt-get install -y --no-install-recommends bats && rm -rf /var/lib/apt/lists/*
 COPY --chmod=755 run-bats.bash /usr/local/bin/run-bats
+COPY --chmod=755 scripts/ /kd/bin
+# Test-only: providers are installed per test rather than baked in, so the
+# deploy user has to be able to add siblings beside the dispatchers
+RUN chown ${KAPTAIN_USER_ID} /kd/bin
+USER ${KAPTAIN_USER_ID}

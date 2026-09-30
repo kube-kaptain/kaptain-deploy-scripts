@@ -29,6 +29,13 @@ NOTIFY_CALLER=$(ps -o args= -p ${PPID} 2>/dev/null | # Full command line of the 
          print parts[n]
        }') || true
 export NOTIFY_CALLER="${NOTIFY_CALLER:-UNKNOWN_CALLER}"
+
+# Allow the post-build env image check to skip any installed notify plugins
+# without configuration available
+if [[ "${NOTIFY_ECHO_ONLY:-}" == "true" ]]; then
+  exec "${script_dir}/notify-error-echo" "${message}"
+fi
+
 start_time=$(date +%s)
 threshold="${NOTIFY_TOO_SLOW_THRESHOLD:-10}"
 

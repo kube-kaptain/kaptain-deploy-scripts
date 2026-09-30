@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Split phase: set aside every child set marked for seed-and-compare.
+#
+# Run-platform deploys only (ENVIRONMENT_TYPE=meta-env). An environment never
+# holds a marked set, so on an environment deploy any marker fails the deploy.
+#
+# A run-platform's manifests hold one directory per child. A child whose set
+# carries the seed-and-compare marker (an environment's deployer, or the
+# run-platform's own) moves to work/seed/<child>. This runs after the secret
+# work, so a set-aside set is complete, and before validation and apply, so
+# those phases only see what is applied now. Seeding is not implemented yet:
+# set-aside sets are left in place for inspection.
+#
+# The marker is a ConfigMap in a namespace that never exists, so a stray one
+# fails the apply rather than landing anywhere.
+set -euo pipefail
+
+base="${RUN_BASE_PATH:-/kd}"
+work_dir="${base}/work/manifests"
+seed_dir="${base}/work/seed"
+marker_name="run-environment-seed-and-compare-marker.yaml"
+
+environment_type="${ENVIRONMENT_TYPE:?ENVIRONMENT_TYPE is required (env or meta-env)}"
+
+if [[ ! -d "${work_dir}" ]]; then
+  notify-error "Manifests work directory does not exist: ${work_dir}"
+  exit 1
+fi
+
+# Collected first: the moves below would disturb a find still walking the tree.
+markers=()
+while IFS= read -r -d '' marker; do
+  markers+=("${marker}")
+done < <(find "${work_dir}" -type f -name "${marker_name}" -print0 | sort -z)
+
+if [[ ${#markers[@]} -eq 0 ]]; then
+  log "No seed-and-compare sets to set aside"
+  exit 0
+fi
+
+if [[ "${environment_type}" != "meta-env" ]]; then
+  for marker in "${markers[@]}"; do
+    notify-error "Seed-and-compare marker in a ${environment_type} deploy: ${marker#"${work_dir}"/}"
+  done
+  notify-error "Only a run-platform (meta-env) deploy sets aside seed-and-compare sets"
+  exit 1
+fi
+
+mkdir -p "${seed_dir}"
+for marker in "${markers[@]}"; do
+  child_dir=$(dirname "${marker}")
+  # The marker must sit at the top of a child set; anywhere else it cannot say
+  # which set to hold back.
+  if [[ "$(dirname "${child_dir}")" != "${work_dir}" ]]; then
+    notify-error "Seed-and-compare marker is not at the top of a child set: ${marker#"${work_dir}"/}"
+    exit 1
+  fi
+  child=$(basename "${child_dir}")
+  mv "${child_dir}" "${seed_dir}/${child}"
+  log "Set aside for seeding: ${child}"
+done
+
+log "Set aside ${#markers[@]} seed-and-compare set(s) in ${seed_dir}"

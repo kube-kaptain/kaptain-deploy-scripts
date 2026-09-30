@@ -6,6 +6,23 @@
 # Checks required env vars and runs plugin validators.
 set -euo pipefail
 
+# The environment build passes --notify-echo-only when it runs this against the
+# freshly built image, where no chat provider has any credentials mounted.
+if [[ $# -gt 1 ]]; then
+  log "At most one argument accepted, got $#"
+  exit 42
+elif [[ $# -eq 1 ]]; then
+  case "${1:-}" in
+    --notify-echo-only)
+      export NOTIFY_ECHO_ONLY=true
+      ;;
+    *)
+      log "Unknown argument '${1}'"
+      exit 42
+      ;;
+  esac
+fi
+
 log "Validating environment variables up front..."
 
 failures=0

@@ -11,6 +11,12 @@ log "Validating container up front..."
 failures=0
 mount_base="${MOUNT_BASE_PATH:-}"
 
+# Echo-only at runtime can be achieved by simply not including a notify plugin
+if [[ -n "${NOTIFY_ECHO_ONLY:-}" ]]; then
+  notify-error "NOTIFY_ECHO_ONLY is set at runtime - chat notification would be silently disabled"
+  failures=$((failures + 1))
+fi
+
 # Required mount paths
 if [[ ! -d "${mount_base}/secret" ]]; then
   notify-error "Secret mount not found: ${mount_base}/secret"

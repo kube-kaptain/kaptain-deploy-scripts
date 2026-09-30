@@ -69,6 +69,33 @@ teardown() {
   [[ "${result}" == *"sk-test-key-abc-456"* ]]
 }
 
+@test "deploy sets aside a seed-and-compare set with its secrets assembled and applies the rest" {
+  export ENVIRONMENT="run-platform-test"
+  export ENVIRONMENT_TYPE="meta-env"
+  mkdir -p "${TEST_RUN_BASE}/manifests/run-env-child"
+  printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: run-env-child-run-environment-seed-and-compare-marker\n  namespace: do-not-deploy-kaptain-seed-and-compare-marker-file-only\n' \
+    > "${TEST_RUN_BASE}/manifests/run-env-child/run-environment-seed-and-compare-marker.yaml"
+  cp "${FIXTURES_DIR}/templates/secret.template.yaml" "${TEST_RUN_BASE}/manifests/run-env-child/"
+  run deploy
+  [ "$status" -eq 0 ]
+  local seeded="${TEST_RUN_BASE}/work/seed/run-env-child"
+  [ -f "${seeded}/secret.yaml" ]
+  [[ "$(<"${seeded}/secret.yaml")" == *"super-secret-db-pass-123"* ]]
+  [ ! -e "${TEST_RUN_BASE}/work/manifests/run-env-child" ]
+  ! grep -q 'run-env-child' "${TEST_RUN_BASE}/work/k-commands.log"
+  [ -f "${TEST_RUN_BASE}/work/manifests/configmap.yaml" ]
+}
+
+@test "deploy fails an environment whose manifests hold a seed-and-compare marker" {
+  mkdir -p "${TEST_RUN_BASE}/manifests/run-env-child"
+  printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: stray-marker\n  namespace: do-not-deploy-kaptain-seed-and-compare-marker-file-only\n' \
+    > "${TEST_RUN_BASE}/manifests/run-env-child/run-environment-seed-and-compare-marker.yaml"
+  run deploy
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Seed-and-compare marker in a env deploy"* ]]
+  ! grep -q 'apply --server-side' "${TEST_RUN_BASE}/work/k-commands.log" 2>/dev/null
+}
+
 @test "deploy calls k apply --dry-run=server --server-side for validation" {
   deploy
   [ -f "${TEST_RUN_BASE}/work/k-commands.log" ]

@@ -192,6 +192,9 @@ run decrypt-secrets
 # shellcheck disable=SC2154 # TOKEN_NAME_STYLE set by environment build process
 run "${SCRIPT_DIR}/plugins/token-name-validators/${TOKEN_NAME_STYLE}" "${decrypted}"
 run assemble-secrets
+# After the secret work so set-aside sets are complete; before validation and
+# apply so those only see what is applied now.
+run split-manifests
 
 # TODO also record resource types so we can show what changes somehowe
 run scan-images "before"

@@ -167,6 +167,9 @@ prepare_build_context() {
   rm -rf "${BUILD_CONTEXT}"
   mkdir -p "${BUILD_CONTEXT}"
   cp "${TEMPLATES_DIR}/run-bats.bash" "${BUILD_CONTEXT}/"
+  # Scripts are baked into /kd/bin by the test images, exactly as a deploy image
+  # build does it, so tests see the layout that actually ships
+  cp -R "${SRC_DIR}/scripts" "${BUILD_CONTEXT}/"
 }
 
 generate_dockerfile() {
@@ -207,7 +210,6 @@ run_tests_in_container() {
   echo "Running tests: ${label}"
 
   if "${CONTAINER_RUNTIME}" run --rm \
-    -v "${SRC_DIR}/scripts:/kd/bin:ro" \
     -v "${SRC_DIR}/test:/kd/test:ro" \
     -v "${SRC_DIR}/test/fixtures/cleanup:/kd/fixtures/cleanup:ro" \
     -v "${SRC_DIR}/test/fixtures/manifests:/kd/fixtures/manifests:ro" \

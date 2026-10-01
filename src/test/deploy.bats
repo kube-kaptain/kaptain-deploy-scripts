@@ -69,9 +69,12 @@ teardown() {
   [[ "${result}" == *"sk-test-key-abc-456"* ]]
 }
 
-@test "deploy sets aside a seed-and-compare set with its secrets assembled and applies the rest" {
+@test "deploy sets aside a run-platform's own set and a seed-and-compare set with its secrets assembled and applies the rest" {
   export ENVIRONMENT="run-platform-test"
   export ENVIRONMENT_TYPE="meta-env"
+  mkdir -p "${TEST_RUN_BASE}/manifests/run-platform-test"
+  printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: run-platform-own\n' \
+    > "${TEST_RUN_BASE}/manifests/run-platform-test/configmap.yaml"
   mkdir -p "${TEST_RUN_BASE}/manifests/run-env-child"
   printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: run-env-child-run-environment-seed-and-compare-marker\n  namespace: do-not-deploy-kaptain-seed-and-compare-marker-file-only\n' \
     > "${TEST_RUN_BASE}/manifests/run-env-child/run-environment-seed-and-compare-marker.yaml"
@@ -82,7 +85,10 @@ teardown() {
   [ -f "${seeded}/secret.yaml" ]
   [[ "$(<"${seeded}/secret.yaml")" == *"super-secret-db-pass-123"* ]]
   [ ! -e "${TEST_RUN_BASE}/work/manifests/run-env-child" ]
+  [ ! -e "${seeded}/run-environment-seed-and-compare-marker.yaml" ]
   ! grep -q 'run-env-child' "${TEST_RUN_BASE}/work/k-commands.log"
+  [ -f "${TEST_RUN_BASE}/work/self/configmap.yaml" ]
+  [ ! -e "${TEST_RUN_BASE}/work/manifests/run-platform-test" ]
   [ -f "${TEST_RUN_BASE}/work/manifests/configmap.yaml" ]
 }
 

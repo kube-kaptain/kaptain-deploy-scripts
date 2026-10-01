@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Offline bootstrap of a run-platform: produce its own ready-to-apply manifests
+# without a cluster, for the first deploy that nothing else can do.
+#
+# Run-platform images only (ENVIRONMENT_TYPE=meta-env). Needs only the
+# environment passphrase mounted where a deploy would find it, and a directory
+# holding no manifests mounted at /kd/bootstrap for the output. Runs the same preparation
+# as a deploy (prepare, decrypt, assemble, split) and copies the run-platform's
+# own set into the output. Everything else stays in the container's work dir
+# and goes with it.
+#
+# The output holds assembled Secrets in plain text.
+set -euo pipefail
+
+# Nothing here can reach a chat provider's credentials, and nothing should try
+export NOTIFY_ECHO_ONLY=true
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/lib"
+
+# shellcheck source=src/scripts/lib/token-format.bash
+source "${LIB_DIR}/token-format.bash"
+
+base="${RUN_BASE_PATH:-/kd}"
+work="${base}/work"
+bootstrap_dir="${base}/bootstrap"
+passphrase_file="${MOUNT_BASE_PATH:-}/secret/environmentPassphrase"
+
+if ! validate-tooling; then
+  notify-error "Tooling validation failed - use an appropriate base image and build process"
+  exit 43
+fi
+validate-environment --notify-echo-only
+
+# shellcheck disable=SC2154 # ENVIRONMENT_TYPE set by final environment image build, validated by validate-environment
+if [[ "${ENVIRONMENT_TYPE}" != "meta-env" ]]; then
+  notify-error "Only a run-platform (meta-env) image bootstraps, this is ${ENVIRONMENT_TYPE}"
+  exit 1
+fi
+
+# Token name and delimiter styles must be set in the image by the build
+if ! validate_token_styles; then
+  notify-error "Token style validation failed - check TOKEN_NAME_STYLE and TOKEN_DELIMITER_STYLE"
+  exit 45
+fi
+
+if [[ ! -f "${passphrase_file}" ]]; then
+  notify-error "Environment passphrase not mounted: ${passphrase_file}"
+  exit 1
+fi
+
+if [[ ! -d "${bootstrap_dir}" ]]; then
+  notify-error "Bootstrap output directory not mounted: ${bootstrap_dir}"
+  exit 1
+fi
+
+# Ensure no manifests or files that could be one are in the target dir
+existing_manifests=$(find "${bootstrap_dir}" -type f \( -name '*.yaml' -o -name '*.yml' \))
+if [[ -n "${existing_manifests}" ]]; then
+  notify-error "Bootstrap output directory already holds manifests: ${bootstrap_dir}
+${existing_manifests}"
+  exit 1
+fi
+
+log "Initialising structure..."
+mkdir -p "${work}/manifests"
+mkdir -p "${work}/decrypted"
+mkdir -p "${work}/audit"
+
+prepare-manifests
+decrypt-secrets
+# shellcheck disable=SC2154 # TOKEN_NAME_STYLE set by environment build process
+"${SCRIPT_DIR}/plugins/token-name-validators/${TOKEN_NAME_STYLE}" "${work}/decrypted"
+assemble-secrets
+split-manifests
+
+cp -a "${work}/self/." "${bootstrap_dir}/"
+
+file_count=$(find "${work}/self" -type f | wc -l)
+# shellcheck disable=SC2154 # ENVIRONMENT and VERSION set by final environment image build, validated by validate-environment
+notify-info "Bootstrap of ${ENVIRONMENT} version ${VERSION} complete: ${file_count} manifest files in ${bootstrap_dir}"
+notify-warning "The bootstrap output holds assembled Secrets in plain text - handle and remove it accordingly"

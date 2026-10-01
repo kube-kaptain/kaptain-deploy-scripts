@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
 #
-# Wrapper for hook-pre-tagging-tests to run the full test matrix.
+# Wrapper for hook-post-versions-and-naming to run the full test matrix.
+# That is the first hook to receive IS_RELEASE.
 set -euo pipefail
 
 # Release builds already passed tests on the merge commit - skip re-running

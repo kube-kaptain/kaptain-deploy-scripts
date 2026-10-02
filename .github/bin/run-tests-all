@@ -2,15 +2,18 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
 #
-# Wrapper for hook-pre-tagging-tests to run the full test matrix.
+# Wrapper for hook-post-versions-and-naming to run the tests. That is the first
+# hook to receive IS_RELEASE.
+#
+# PR builds run the full matrix. Local and release builds run the default
+# single distro and kube version: release builds already passed the full
+# matrix on the PR, and local builds want a quick answer.
 set -euo pipefail
-
-# Release builds already passed tests on the merge commit - skip re-running
-if [[ "${IS_RELEASE:-}" == "true" ]]; then
-  echo "Skipping tests: IS_RELEASE is true"
-  exit 0
-fi
 
 "$(dirname "${BASH_SOURCE[0]}")/resolve-shared-scripts-dependency.bash"
 
-exec "$(dirname "${BASH_SOURCE[0]}")/run-tests" --all
+if [[ "${BUILD_MODE:-}" == "build_server" && "${IS_RELEASE:-}" == "false" ]]; then
+  exec "$(dirname "${BASH_SOURCE[0]}")/run-tests" --all
+fi
+
+exec "$(dirname "${BASH_SOURCE[0]}")/run-tests"

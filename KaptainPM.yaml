@@ -14,7 +14,7 @@ spec:
         subPathLinuxArm64: src/docker
         squash: 'no'  # FROM scratch - no point.
     hooks:
-      preTaggingTests: .github/bin/run-tests-all
+      postVersionsAndNaming: .github/bin/run-tests-all
       preDockerPrepare: .github/bin/copy-scripts-for-docker
   platform:
     githubActions:

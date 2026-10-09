@@ -58,7 +58,7 @@ if [[ ! -d "${bootstrap_dir}" ]]; then
 fi
 
 # Ensure no manifests or files that could be one are in the target dir
-existing_manifests=$(find "${bootstrap_dir}" -type f \( -name '*.yaml' -o -name '*.yml' \))
+existing_manifests=$(find "${bootstrap_dir}" -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' \))
 if [[ -n "${existing_manifests}" ]]; then
   notify-error "Bootstrap output directory already holds manifests: ${bootstrap_dir}
 ${existing_manifests}"

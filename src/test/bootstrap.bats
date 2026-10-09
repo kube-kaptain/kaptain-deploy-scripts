@@ -125,6 +125,15 @@ teardown() {
   [ ! -e "${OUT}/configmap.yaml" ]
 }
 
+@test "bootstrap fails on a .json already in the output directory" {
+  printf '{"keep": "me"}\n' > "${OUT}/existing.json"
+  run bootstrap
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Bootstrap output directory already holds manifests: ${OUT}"* ]]
+  [[ "$output" == *"${OUT}/existing.json"* ]]
+  [ "$(ls -A "${OUT}")" = "existing.json" ]
+}
+
 @test "bootstrap ignores files in the output directory that are not manifests" {
   printf 'finder\n' > "${OUT}/.DS_Store"
   mkdir -p "${OUT}/notes"

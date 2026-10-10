@@ -81,6 +81,95 @@ MOCK
   [[ "$output" == *"Validation failed"* ]]
 }
 
+# validate-manifests tests for the sets split-manifests holds back
+#
+# A run-platform's own set and its seed-and-compare children are applied by
+# hand later, so a deploy validates them while a cluster is there to do it.
+
+write_set_manifest() {
+  local dir="$1"
+  local name="$2"
+  mkdir -p "${dir}"
+  printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n' "${name}" > "${dir}/${name}.yaml"
+}
+
+@test "validate-manifests validates the run-platform's own set" {
+  export ENVIRONMENT_TYPE="meta-env"
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_set_manifest "${TEST_RUN_BASE}/work/self" own-thing
+  run validate-manifests
+  [ "$status" -eq 0 ]
+  grep -q -- "-f ${TEST_RUN_BASE}/work/self/own-thing.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+}
+
+@test "validate-manifests validates every seeded child set" {
+  export ENVIRONMENT_TYPE="meta-env"
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_set_manifest "${TEST_RUN_BASE}/work/self" own-thing
+  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a" child-a
+  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-b" child-b
+  run validate-manifests
+  [ "$status" -eq 0 ]
+  grep -q -- "-f ${TEST_RUN_BASE}/work/seed/run-env-a/child-a.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q -- "-f ${TEST_RUN_BASE}/work/seed/run-env-b/child-b.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+}
+
+@test "validate-manifests validates nested files within a seeded child set" {
+  export ENVIRONMENT_TYPE="meta-env"
+  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a/nested/deeper" buried
+  run validate-manifests
+  [ "$status" -eq 0 ]
+  grep -q -- "-f ${TEST_RUN_BASE}/work/seed/run-env-a/nested/deeper/buried.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+}
+
+@test "validate-manifests ignores held-back sets on an environment deploy" {
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_set_manifest "${TEST_RUN_BASE}/work/self" own-thing
+  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a" child-a
+  run validate-manifests
+  [ "$status" -eq 0 ]
+  ! grep -q "work/self/" "${TEST_RUN_BASE}/work/k-commands.log"
+  ! grep -q "work/seed/" "${TEST_RUN_BASE}/work/k-commands.log"
+}
+
+@test "validate-manifests passes with only a held-back set to validate" {
+  export ENVIRONMENT_TYPE="meta-env"
+  write_set_manifest "${TEST_RUN_BASE}/work/self" own-thing
+  run validate-manifests
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Validated 1 files"* ]]
+}
+
+@test "validate-manifests keeps audit files from different sets apart" {
+  export ENVIRONMENT_TYPE="meta-env"
+  write_set_manifest "${TEST_RUN_BASE}/work/manifests" same-name
+  write_set_manifest "${TEST_RUN_BASE}/work/self" same-name
+  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a" same-name
+  run validate-manifests
+  [ "$status" -eq 0 ]
+  [ -f "${TEST_RUN_BASE}/work/audit/validation/manifests_same-name.txt" ]
+  [ -f "${TEST_RUN_BASE}/work/audit/validation/self_same-name.txt" ]
+  [ -f "${TEST_RUN_BASE}/work/audit/validation/seed_run-env-a_same-name.txt" ]
+}
+
+@test "validate-manifests names the set when a held-back manifest fails" {
+  export ENVIRONMENT_TYPE="meta-env"
+  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a" child-a
+  cat > "${TEST_MOCK_BIN}/k" << 'MOCK'
+#!/usr/bin/env bash
+echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"
+if [[ "$*" == *"--dry-run"* ]]; then
+  echo "validation error" >&2
+  exit 1
+fi
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/k"
+
+  run validate-manifests
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"seed/run-env-a/child-a.yaml"* ]]
+}
+
 # apply-manifests tests
 
 @test "apply-manifests calls k apply" {

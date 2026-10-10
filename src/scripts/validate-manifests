@@ -7,8 +7,9 @@
 set -euo pipefail
 
 base="${RUN_BASE_PATH:-/kd}"
-manifests_dir="${base}/work/manifests"
-audit_dir="${base}/work/audit/validation"
+work_dir="${base}/work"
+manifests_dir="${work_dir}/manifests"
+audit_dir="${work_dir}/audit/validation"
 
 mkdir -p "${audit_dir}"
 
@@ -20,23 +21,39 @@ failed=0
 failed_files=()
 
 shopt -s globstar nullglob
-for manifest in "${manifests_dir}"/**/*.yaml; do
-  [[ -f "${manifest}" ]] || continue
 
-  # Create flattened audit filename: path/to/file.yaml → path_to_file.txt
-  relative="${manifest#"${manifests_dir}/"}"
-  audit_file="${audit_dir}/${relative//\//_}"
-  audit_file="${audit_file%.yaml}.txt"
+# The set applied now, plus on a run-platform the sets split-manifests held
+# back: its own and every child marked for seeding. Those are applied by hand
+# later, so they get validated here while there is a cluster to validate them
+# against.
+sets=("${manifests_dir}")
+if [[ "${ENVIRONMENT_TYPE:-}" == "meta-env" ]]; then
+  sets+=("${work_dir}/self" "${work_dir}/seed"/*)
+fi
 
-  scanned=$((scanned + 1))
+for set_dir in "${sets[@]}"; do
+  [[ -d "${set_dir}" ]] || continue
 
-  if k apply --dry-run=server --server-side --field-manager="kaptain/${ENVIRONMENT_TYPE:-}/${ENVIRONMENT:-}" -f "${manifest}" > "${audit_file}" 2>&1; then
-    passed=$((passed + 1))
-  else
-    failed=$((failed + 1))
-    failed_files+=("${relative}")
-  fi
+  for manifest in "${set_dir}"/**/*.yaml; do
+    [[ -f "${manifest}" ]] || continue
+
+    # Audit filename is flattened from the path within the work dir, so the
+    # sets cannot collide: seed/run-a/app.yaml → seed_run-a_app.txt
+    relative="${manifest#"${work_dir}/"}"
+    audit_file="${audit_dir}/${relative//\//_}"
+    audit_file="${audit_file%.yaml}.txt"
+
+    scanned=$((scanned + 1))
+
+    if k apply --dry-run=server --server-side --field-manager="kaptain/${ENVIRONMENT_TYPE:-}/${ENVIRONMENT:-}" -f "${manifest}" > "${audit_file}" 2>&1; then
+      passed=$((passed + 1))
+    else
+      failed=$((failed + 1))
+      failed_files+=("${relative}")
+    fi
+  done
 done
+
 shopt -u globstar nullglob
 
 if [[ ${scanned} -eq 0 ]]; then

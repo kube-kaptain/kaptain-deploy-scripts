@@ -47,8 +47,8 @@ teardown() {
   #  3. mock k unblocks; deploy finishes the apply phase normally.
   cat > "${TEST_MOCK_BIN}/k" << 'MOCK'
 #!/usr/bin/env bash
-echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"
 if [[ "$*" == *"apply --server-side"* ]] && [[ "$*" != *"--dry-run"* ]]; then
+  echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"
   marker="${RUN_BASE_PATH}/work/apply-phase-entered"
   : > "${marker}"
   i=0
@@ -56,8 +56,11 @@ if [[ "$*" == *"apply --server-side"* ]] && [[ "$*" != *"--dry-run"* ]]; then
     /bin/sleep 0.1
     i=$((i + 1))
   done
+  echo "mock: $*"
+  exit 0
 fi
-echo "mock: $*"
+# Everything else, discovery for the kind pre-check included, as standard
+exec "${TEST_MOCK_BIN}/k-standard" "$@"
 MOCK
   chmod +x "${TEST_MOCK_BIN}/k"
 

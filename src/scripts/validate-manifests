@@ -3,14 +3,190 @@
 # Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
 #
 # Validate manifests against Kubernetes API via dry-run.
-# Validates each file individually, capturing output to audit directory.
+# Checks every declared kind is served first, then validates each file
+# individually, capturing output to audit directory.
 set -euo pipefail
 
 base="${RUN_BASE_PATH:-/kd}"
-manifests_dir="${base}/work/manifests"
-audit_dir="${base}/work/audit/validation"
+work_dir="${base}/work"
+manifests_dir="${work_dir}/manifests"
+audit_dir="${work_dir}/audit/validation"
 
 mkdir -p "${audit_dir}"
+
+shopt -s globstar nullglob
+
+# The set applied now, plus on a run-platform the sets split-manifests held
+# back: its own and every child marked for seeding. Those are applied by hand
+# later, so they get validated here while there is a cluster to validate them
+# against.
+sets=("${manifests_dir}")
+if [[ "${ENVIRONMENT_TYPE:-}" == "meta-env" ]]; then
+  sets+=("${work_dir}/self" "${work_dir}/seed"/*)
+fi
+
+log "Checking the set holds nothing but single-document .yaml files..."
+
+manifests=()
+rejected=()
+for set_dir in "${sets[@]}"; do
+  [[ -d "${set_dir}" ]] || continue
+
+  # Dot files and dot directories are skipped rather than rejected: globstar
+  # without dotglob never matches them, so tool droppings cannot fail a deploy.
+  for entry in "${set_dir}"/**/*; do
+    [[ -f "${entry}" ]] || continue
+
+    if [[ "${entry}" != *.yaml ]]; then
+      rejected+=("${entry#"${work_dir}/"}")
+      continue
+    fi
+
+    manifests+=("${entry}")
+  done
+done
+
+shopt -u globstar nullglob
+
+# kubectl reads .yaml, .yml and .json from a directory, and only in lowercase.
+# So a .yml is applied without ever being dry-run here, and a .YAML is silently
+# not applied at all. One spelling, enforced, and the silent case becomes loud.
+if [[ ${#rejected[@]} -gt 0 ]]; then
+  mapfile -t rejected < <(printf '%s\n' "${rejected[@]}" | sort)
+
+  message="Files in the set that are not .yaml: ${#rejected[@]}"
+  message+=$'\n'"Rename them, or keep them out of the set:"
+  for entry in "${rejected[@]}"; do
+    message+=$'\n'"  - ${entry}"
+  done
+  notify-error "${message}"
+  exit 51
+fi
+
+if [[ ${#manifests[@]} -eq 0 ]]; then
+  notify-error "No manifest files found to validate in ${manifests_dir}"
+  exit 43
+fi
+
+# One document per file, so one audit file, one dry-run and one report line per
+# manifest. The document count comes from yq rather than from grepping for ---
+# so that a ConfigMap carrying markdown or YAML in its data cannot trip it: the
+# parser decides what a separator is. A lone leading --- is still one document
+# and is left alone.
+declare -A documents=()
+while IFS='|' read -r file _; do
+  [[ -n "${file}" ]] || continue
+  documents["${file}"]=$(( ${documents["${file}"]:-0} + 1 ))
+done <<< "$(yq -N '[filename, (di | tostring)] | join("|")' "${manifests[@]}")"
+
+multi_document=()
+for file in "${!documents[@]}"; do
+  [[ ${documents["${file}"]} -gt 1 ]] || continue
+  multi_document+=("${file#"${work_dir}/"}: ${documents["${file}"]} documents")
+done
+
+if [[ ${#multi_document[@]} -gt 0 ]]; then
+  mapfile -t multi_document < <(printf '%s\n' "${multi_document[@]}" | sort)
+
+  message="Files holding more than one document: ${#multi_document[@]}"
+  message+=$'\n'"Split them, one resource per file, with no --- separators:"
+  for entry in "${multi_document[@]}"; do
+    message+=$'\n'"  - ${entry}"
+  done
+  notify-error "${message}"
+  exit 51
+fi
+
+# Every kind must be served before a single dry-run runs. kubectl cannot
+# resolve a kind the cluster does not serve, and in failing it throws away its
+# discovery cache and refetches the full OpenAPI document, which is hundreds of
+# megabytes of parsing on a cluster serving many API versions. The dry-run loop
+# below would pay that over again for every file. One small discovery read per
+# distinct apiVersion costs nothing by comparison.
+log "Checking every declared kind is served by the cluster..."
+
+declare -A served=()       # "<apiVersion> <Kind>" present means it can be applied
+declare -A wanted=()       # "<apiVersion> <Kind>" -> first file declaring it
+declare -A seen_version=() # Distinct apiVersions, to ask the cluster once each
+api_versions=()
+
+# One yq process for every document in every file. A document missing either
+# field is left to the dry-run to reject, which reports it better than this can.
+while IFS='|' read -r file api_version kind; do
+  [[ -n "${api_version}" && -n "${kind}" ]] || continue
+
+  if [[ -z "${wanted["${api_version} ${kind}"]:-}" ]]; then
+    wanted["${api_version} ${kind}"]="${file}"
+  fi
+
+  if [[ -z "${seen_version["${api_version}"]:-}" ]]; then
+    seen_version["${api_version}"]=1
+    api_versions+=("${api_version}")
+  fi
+done <<< "$(yq -N 'select(. != null) | [filename, (.apiVersion // ""), (.kind // "")] | join("|")' "${manifests[@]}")"
+
+# A set can install a CRD and resources of that kind in the same deploy, so a
+# kind the set itself defines counts as served. Fields are group, kind, then
+# every served version of it.
+while IFS='|' read -r crd_group crd_kind crd_versions; do
+  [[ -n "${crd_group}" && -n "${crd_kind}" && -n "${crd_versions}" ]] || continue
+
+  IFS='|' read -r -a crd_version_list <<< "${crd_versions}"
+  for crd_version in "${crd_version_list[@]}"; do
+    served["${crd_group}/${crd_version} ${crd_kind}"]=1
+  done
+done <<< "$(yq -N 'select(.kind == "CustomResourceDefinition") | [.spec.group, .spec.names.kind] + [.spec.versions[].name] | join("|")' "${manifests[@]}")"
+
+for api_version in "${api_versions[@]}"; do
+  # Nothing to ask about if the set defines every kind it uses from this one
+  unsatisfied=false
+  for key in "${!wanted[@]}"; do
+    [[ "${key}" == "${api_version} "* ]] || continue
+    [[ -n "${served["${key}"]:-}" ]] && continue
+    unsatisfied=true
+    break
+  done
+  [[ "${unsatisfied}" == "true" ]] || continue
+
+  if [[ "${api_version}" == */* ]]; then
+    discovery_path="/apis/${api_version}"
+  else
+    discovery_path="/api/${api_version}"
+  fi
+
+  # A group/version the cluster does not serve answers 404. That is not an
+  # error to stop on here, it just means none of its kinds are served, which
+  # the report below says far more usefully.
+  if ! raw=$(k get --raw "${discovery_path}" 2>/dev/null); then
+    continue
+  fi
+
+  while IFS= read -r served_kind; do
+    [[ -n "${served_kind}" ]] || continue
+    served["${api_version} ${served_kind}"]=1
+  done <<< "$(yq -p=json -N '.resources[].kind' <<< "${raw}" || true)"
+done
+
+missing=()
+for key in "${!wanted[@]}"; do
+  [[ -n "${served["${key}"]:-}" ]] && continue
+  missing+=("${wanted["${key}"]#"${work_dir}/"}: ${key}")
+done
+
+if [[ ${#missing[@]} -gt 0 ]]; then
+  # Associative arrays have no useful order, so sort for a stable report
+  mapfile -t missing < <(printf '%s\n' "${missing[@]}" | sort)
+
+  message="Kinds not served by this cluster: ${#missing[@]}"
+  message+=$'\n'"Install what provides them, or correct the manifests:"
+  for entry in "${missing[@]}"; do
+    message+=$'\n'"  - ${entry}"
+  done
+  notify-error "${message}"
+  exit 50
+fi
+
+log "Every declared kind is served - ${#wanted[@]} across ${#api_versions[@]} API versions"
 
 log "Validating manifests against API server (dry-run)"
 
@@ -19,12 +195,10 @@ passed=0
 failed=0
 failed_files=()
 
-shopt -s globstar nullglob
-for manifest in "${manifests_dir}"/**/*.yaml; do
-  [[ -f "${manifest}" ]] || continue
-
-  # Create flattened audit filename: path/to/file.yaml → path_to_file.txt
-  relative="${manifest#"${manifests_dir}/"}"
+for manifest in "${manifests[@]}"; do
+  # Audit filename is flattened from the path within the work dir, so the
+  # sets cannot collide: seed/run-a/app.yaml → seed_run-a_app.txt
+  relative="${manifest#"${work_dir}/"}"
   audit_file="${audit_dir}/${relative//\//_}"
   audit_file="${audit_file%.yaml}.txt"
 
@@ -37,12 +211,6 @@ for manifest in "${manifests_dir}"/**/*.yaml; do
     failed_files+=("${relative}")
   fi
 done
-shopt -u globstar nullglob
-
-if [[ ${scanned} -eq 0 ]]; then
-  notify-error "No manifest files found to validate in ${manifests_dir}"
-  exit 43
-fi
 
 if [[ ${failed} -eq 0 ]]; then
   notify-info "Validated ${scanned} files against the Kubernetes API - all passed"

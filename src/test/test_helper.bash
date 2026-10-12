@@ -16,6 +16,8 @@ setup_test_dirs() {
   # Export paths that scripts use
   export RUN_BASE_PATH="${TEST_RUN_BASE}"
   export MOUNT_BASE_PATH="${TEST_MOUNT_BASE}"
+  # Exported so a mock can delegate to another mock beside it
+  export TEST_MOCK_BIN
 
   # Create required directory structure under RUN_BASE_PATH
   # Note: work subdirs (decrypted, manifests, audit, oci-images) are created by scripts
@@ -36,16 +38,66 @@ teardown_test_dirs() {
 }
 
 install_mock_k() {
-  cat > "${TEST_MOCK_BIN}/k" << 'MOCK'
+  # Discovery for validate-manifests' kind pre-check. Defaults cover what the
+  # fixtures declare; a test wanting more calls serve_discovery itself.
+  serve_discovery /api/v1 ConfigMap Secret Service ServiceAccount Namespace
+  serve_discovery /apis/apps/v1 Deployment StatefulSet DaemonSet
+  serve_discovery /apis/batch/v1 Job CronJob
+  serve_discovery /apis/apiextensions.k8s.io/v1 CustomResourceDefinition
+
+  cat > "${TEST_MOCK_BIN}/k-standard" << 'MOCK'
 #!/usr/bin/env bash
 echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"
+
+# Discovery: one file per served group/version, 404 for anything else
+if [[ "$1" == "get" ]] && [[ "$2" == "--raw" ]]; then
+  served_file="${RUN_BASE_PATH}/work/mock-k-discovery/${3//\//_}"
+  if [[ ! -f "${served_file}" ]]; then
+    echo "Error from server (NotFound): the server could not find the requested resource" >&2
+    exit 1
+  fi
+  printf '{"kind":"APIResourceList","resources":['
+  separator=""
+  for served_kind in $(<"${served_file}"); do
+    printf '%s{"name":"mocks","kind":"%s"}' "${separator}" "${served_kind}"
+    separator=","
+  done
+  printf ']}\n'
+  exit 0
+fi
+
 # Return empty for jsonpath queries (oci-images)
 if [[ "$*" == *"-o jsonpath"* ]] || [[ "$*" == *"-o go-template"* ]]; then
   exit 0
 fi
 echo "mock: $*"
 MOCK
+  chmod +x "${TEST_MOCK_BIN}/k-standard"
+  cp "${TEST_MOCK_BIN}/k-standard" "${TEST_MOCK_BIN}/k"
+}
+
+# Every dry-run is rejected, everything else behaves as the standard mock does.
+# Needs install_mock_k first, for the discovery the kind pre-check reads.
+install_mock_k_failing_dry_run() {
+  cat > "${TEST_MOCK_BIN}/k" << 'MOCK'
+#!/usr/bin/env bash
+if [[ "$*" == *"--dry-run"* ]]; then
+  echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"
+  echo "validation error" >&2
+  exit 1
+fi
+exec "${TEST_MOCK_BIN}/k-standard" "$@"
+MOCK
   chmod +x "${TEST_MOCK_BIN}/k"
+}
+
+# Make a group/version answer discovery with the given kinds. Path is as the
+# API serves it: /api/v1 for core, /apis/<group>/<version> for the rest.
+serve_discovery() {
+  local path="$1"
+  shift
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-discovery"
+  printf '%s\n' "$*" > "${RUN_BASE_PATH}/work/mock-k-discovery/${path//\//_}"
 }
 
 install_mock_kubectl() {

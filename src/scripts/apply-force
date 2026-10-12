@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Apply a file or a dir similarly to the way deploy does, but forces conflicts to retake ownership.
+set -euo pipefail
+
+exec k apply --server-side --field-manager="kaptain/${ENVIRONMENT_TYPE:-}/${ENVIRONMENT:-}" --force-conflicts -R -f "$1"

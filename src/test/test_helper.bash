@@ -134,6 +134,22 @@ echo "WARNING: $*" >&2
 MOCK
   chmod +x "${TEST_MOCK_BIN}/notify-warning"
 
+  # Mock notify-success
+  cat > "${TEST_MOCK_BIN}/notify-success" << 'MOCK'
+#!/usr/bin/env bash
+echo "SUCCESS: $*" >> "${RUN_BASE_PATH}/work/notifications.log"
+echo "SUCCESS: $*"
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/notify-success"
+
+  # Mock notify-failure
+  cat > "${TEST_MOCK_BIN}/notify-failure" << 'MOCK'
+#!/usr/bin/env bash
+echo "FAILURE: $*" >> "${RUN_BASE_PATH}/work/notifications.log"
+echo "FAILURE: $*" >&2
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/notify-failure"
+
   # Mock log
   cat > "${TEST_MOCK_BIN}/log" << 'MOCK'
 #!/usr/bin/env bash

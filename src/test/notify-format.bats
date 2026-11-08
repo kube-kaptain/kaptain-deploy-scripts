@@ -26,13 +26,13 @@ teardown() {
 
     # Skip routers, echo providers, and non-caller scripts
     case "$name" in
-      notify-info|notify-error|notify-warning|alert|log) continue ;;
+      notify-info|notify-error|notify-warning|notify-success|notify-failure|alert|log) continue ;;
       *-echo) continue ;;
       k) continue ;;
     esac
 
     # Check if this script calls any notification function
-    if grep -qE '\b(notify-info|notify-error|notify-warning|alert|log)\b' "$script"; then
+    if grep -qE '\b(notify-info|notify-error|notify-warning|notify-success|notify-failure|alert|log)\b' "$script"; then
       local len=${#name}
       if [[ $len -gt $max_len ]]; then
         max_len=$len

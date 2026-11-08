@@ -120,7 +120,7 @@ handle_err() {
   message+="
 Check pod logs for more detail or exec in and inspect the audit directory."
 
-  notify-error "${message}"
+  notify-failure "${message}"
 
   if [[ "${SHUTDOWN_REQUESTED}" == "true" ]]; then
     notify-info "Shutdown already requested - exiting"
@@ -151,13 +151,18 @@ source "${LIB_DIR}/token-format.bash"
 # Defaults for thread-opening message - validation will catch if actually missing
 ENVIRONMENT="${ENVIRONMENT:-UNKNOWN_ENVIRONMENT}"
 VERSION="${VERSION:-UNKNOWN_VERSION}"
+# Restarted deploys of the same version rejoin their chat thread
+export NOTIFY_THREAD_KEY="${NOTIFY_THREAD_KEY:-${ENVIRONMENT}-${VERSION}}"
 start_timestamp=$(human_timestamp)
 start_seconds=$(date -u '+%s')
+
+# Before the first message, which opens the chat thread
+validate-notify
 
 notify-info "*Starting ${ENVIRONMENT} version ${VERSION} deployment process* at ${start_timestamp}"
 
 if ! validate-tooling; then
-  notify-error "Tooling validation failed, this message may not send.
+  notify-failure "Tooling validation failed, this message may not send.
 
 Use an appropriate base image and build process!"
   exit 43
@@ -167,7 +172,7 @@ validate-container
 
 # Token name and delimiter styles must be set in the image by the build
 if ! validate_token_styles; then
-  notify-error "Token style validation failed - check TOKEN_NAME_STYLE and TOKEN_DELIMITER_STYLE"
+  notify-failure "Token style validation failed - check TOKEN_NAME_STYLE and TOKEN_DELIMITER_STYLE"
   exit 45
 fi
 
@@ -216,7 +221,7 @@ run scan-images "after"
 run notify-images-changed
 
 elapsed=$(( $(date -u '+%s') - start_seconds ))
-notify-info "Deployment complete for ${ENVIRONMENT} version ${VERSION} in ${elapsed} seconds"
+notify-success "Deployment complete for ${ENVIRONMENT} version ${VERSION} in ${elapsed} seconds"
 
 change_phase false "Complete"
 

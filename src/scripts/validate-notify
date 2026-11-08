@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Validate the installed notify plugins before the first message of a deploy.
+# Runs every validate-notify-* sibling. Each plugin decides for itself whether
+# a problem stops the deploy (non-zero) or is only reported (zero), usually by
+# a <plugin>Required setting of its own.
+#
+# Reports through log only. A notify message here would open the deploy's chat
+# thread with a validation line, or go through the very plugin that is broken.
+set -euo pipefail
+
+log "Validating notify plugins..."
+
+failures=0
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+shopt -s nullglob
+for validator in "${script_dir}"/validate-notify-*; do
+  if [[ ! -f "${validator}" ]]; then
+    log "Notify validation script '${validator}' is not a file!"
+    failures=$((failures + 1))
+  elif [[ ! -x "${validator}" ]]; then
+    log "Notify validation script '${validator}' is not executable!"
+    failures=$((failures + 1))
+  elif ! "${validator}"; then
+    failures=$((failures + 1))
+  fi
+done
+shopt -u nullglob
+
+if [[ ${failures} -eq 0 ]]; then
+  log "Notify validation passed - continuing"
+elif [[ ${failures} -eq 1 ]]; then
+  log "Notify validation failed with 1 error"
+  exit 44
+else
+  log "Notify validation failed with ${failures} errors"
+  exit 44
+fi

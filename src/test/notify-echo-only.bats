@@ -42,7 +42,7 @@ teardown() {
 # complains on stderr the way a real one would with no credentials present.
 install_fake_providers() {
   local dispatcher
-  for dispatcher in notify-info notify-warning notify-error alert; do
+  for dispatcher in notify-info notify-warning notify-error notify-success notify-failure alert; do
     cat > "${SCRIPTS_DIR}/${dispatcher}-${PROVIDER_SUFFIX}" << MOCK
 #!/usr/bin/env bash
 echo "${dispatcher}-${PROVIDER_SUFFIX}: \$*" >> "\${PROVIDER_LOG}"
@@ -77,6 +77,18 @@ provider_ran() {
   provider_ran notify-error
 }
 
+@test "notify-success runs installed providers by default" {
+  run notify-success "success message"
+  [ "$status" -eq 0 ]
+  provider_ran notify-success
+}
+
+@test "notify-failure runs installed providers by default" {
+  run notify-failure "failure message"
+  [ "$status" -eq 0 ]
+  provider_ran notify-failure
+}
+
 @test "alert runs installed providers by default" {
   run alert "alert message"
   [ "$status" -eq 0 ]
@@ -107,6 +119,22 @@ provider_ran() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"ERROR"* ]]
   ! provider_ran notify-error
+}
+
+@test "notify-success runs only the built-in echo provider in echo-only mode" {
+  export NOTIFY_ECHO_ONLY=true
+  run notify-success "success message"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SUCCESS"* ]]
+  ! provider_ran notify-success
+}
+
+@test "notify-failure runs only the built-in echo provider in echo-only mode" {
+  export NOTIFY_ECHO_ONLY=true
+  run notify-failure "failure message"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"FAILURE"* ]]
+  ! provider_ran notify-failure
 }
 
 @test "alert runs only the built-in echo provider in echo-only mode" {

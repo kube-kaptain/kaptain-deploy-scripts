@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Built-in echo provider for notify-success. Outputs to stdout with
+# timestamp and caller script name.
+# Format: 2026-01-25T14:32:15Z deploy: SUCCESS: message
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: notify-success-echo <message>" >&2
+  echo "Error: message argument required" >&2
+  exit 42
+fi
+
+message="$*"
+timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NOTIFY_CALLER_WIDTH=$(cat "${script_dir}/lib/notify-caller-width")
+
+printf "%s %-${NOTIFY_CALLER_WIDTH}s SUCCESS: %s\n" "${timestamp}" "${NOTIFY_CALLER:-UNKNOWN_CALLER}:" "${message}"

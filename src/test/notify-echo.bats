@@ -217,3 +217,36 @@ SCRIPTS_DIR="/kd/bin"
   [[ "$output" == *"not found"* ]]
 }
 
+@test "notify-success-echo produces output with message" {
+  run "${SCRIPTS_DIR}/notify-success-echo" "success message"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"success message"* ]]
+}
+
+@test "notify-success-echo includes SUCCESS label" {
+  run "${SCRIPTS_DIR}/notify-success-echo" "success message"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SUCCESS"* ]]
+}
+
+@test "notify-success-echo fails without message" {
+  run "${SCRIPTS_DIR}/notify-success-echo"
+  [ "$status" -eq 42 ]
+}
+
+@test "notify-failure-echo produces output with message" {
+  run "${SCRIPTS_DIR}/notify-failure-echo" "failure message"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"failure message"* ]]
+}
+
+@test "notify-failure-echo includes FAILURE label" {
+  run "${SCRIPTS_DIR}/notify-failure-echo" "failure message"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"FAILURE"* ]]
+}
+
+@test "notify-failure-echo fails without message" {
+  run "${SCRIPTS_DIR}/notify-failure-echo"
+  [ "$status" -eq 42 ]
+}

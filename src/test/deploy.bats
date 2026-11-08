@@ -175,6 +175,58 @@ teardown() {
   [[ "$output" == *"Deployment complete for run-test-env"* ]]
 }
 
+@test "deploy sends completion through notify-success" {
+  deploy
+  grep -q "^SUCCESS: Deployment complete for run-test-env version v1.0.0" "${TEST_RUN_BASE}/work/notifications.log"
+}
+
+@test "deploy sends an error through notify-failure, not notify-error" {
+  cat > "${TEST_MOCK_BIN}/apply-manifests" << 'MOCK'
+#!/usr/bin/env bash
+exit 3
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/apply-manifests"
+  run deploy
+  [ "$status" -ne 0 ]
+  grep -q "^FAILURE: Deployment error during Applying manifests" "${TEST_RUN_BASE}/work/notifications.log"
+  ! grep -q "^ERROR: Deployment error" "${TEST_RUN_BASE}/work/notifications.log"
+  ! grep -q "^SUCCESS:" "${TEST_RUN_BASE}/work/notifications.log"
+}
+
+@test "deploy stops before its first message when a notify plugin validator blocks" {
+  cat > "${TEST_MOCK_BIN}/validate-notify" << 'MOCK'
+#!/usr/bin/env bash
+exit 44
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/validate-notify"
+  run deploy
+  [ "$status" -eq 44 ]
+  ! grep -q "^INFO: \*Starting" "${TEST_RUN_BASE}/work/notifications.log"
+  grep -q "^FAILURE: Deployment error during Pre Validation" "${TEST_RUN_BASE}/work/notifications.log"
+  grep -q "Command: validate-notify" "${TEST_RUN_BASE}/work/notifications.log"
+}
+
+@test "deploy sets the chat thread key from environment and version" {
+  cat > "${TEST_MOCK_BIN}/notify-info" << 'MOCK'
+#!/usr/bin/env bash
+echo "THREAD_KEY: ${NOTIFY_THREAD_KEY:-unset}" >> "${RUN_BASE_PATH}/work/notifications.log"
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/notify-info"
+  deploy
+  [[ "$(head -1 "${TEST_RUN_BASE}/work/notifications.log")" == "THREAD_KEY: run-test-env-v1.0.0" ]]
+}
+
+@test "deploy keeps a chat thread key it was given" {
+  cat > "${TEST_MOCK_BIN}/notify-info" << 'MOCK'
+#!/usr/bin/env bash
+echo "THREAD_KEY: ${NOTIFY_THREAD_KEY:-unset}" >> "${RUN_BASE_PATH}/work/notifications.log"
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/notify-info"
+  export NOTIFY_THREAD_KEY="given-key"
+  deploy
+  [[ "$(head -1 "${TEST_RUN_BASE}/work/notifications.log")" == "THREAD_KEY: given-key" ]]
+}
+
 # Mode-specific behavior tests
 
 @test "deploy in job mode sleeps POST_DEPLOY_SLEEP_SUCCESS before exit" {

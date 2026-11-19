@@ -3,8 +3,9 @@
 # Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
 #
 # Validate manifests against Kubernetes API via dry-run.
-# Checks every declared kind is served first, then validates each file
-# individually, capturing output to audit directory.
+# Reads the complete tree in work/manifests. Checks every declared kind is
+# served first, then validates each file individually, capturing output to
+# audit directory.
 set -euo pipefail
 
 base="${RUN_BASE_PATH:-/kd}"
@@ -16,34 +17,25 @@ mkdir -p "${audit_dir}"
 
 shopt -s globstar nullglob
 
-# The set applied now, plus on a run-platform the sets split-manifests held
-# back: its own and every child marked for seeding. Those are applied by hand
-# later, so they get validated here while there is a cluster to validate them
-# against.
-sets=("${manifests_dir}")
-if [[ "${ENVIRONMENT_TYPE:-}" == "meta-env" ]]; then
-  sets+=("${work_dir}/self" "${work_dir}/seed"/*)
-fi
-
+# The complete tree and nothing else. Every dir a later step applies from is a
+# copy of files in it, made by split-manifests, so validating this one tree
+# validates everything that will be applied: a run-platform's own set and its
+# seeded children included.
 log "Checking the set holds nothing but single-document .yaml files..."
 
 manifests=()
 rejected=()
-for set_dir in "${sets[@]}"; do
-  [[ -d "${set_dir}" ]] || continue
+# Dot files and dot directories are skipped rather than rejected: globstar
+# without dotglob never matches them, so tool droppings cannot fail a deploy.
+for entry in "${manifests_dir}"/**/*; do
+  [[ -f "${entry}" ]] || continue
 
-  # Dot files and dot directories are skipped rather than rejected: globstar
-  # without dotglob never matches them, so tool droppings cannot fail a deploy.
-  for entry in "${set_dir}"/**/*; do
-    [[ -f "${entry}" ]] || continue
+  if [[ "${entry}" != *.yaml ]]; then
+    rejected+=("${entry#"${work_dir}/"}")
+    continue
+  fi
 
-    if [[ "${entry}" != *.yaml ]]; then
-      rejected+=("${entry#"${work_dir}/"}")
-      continue
-    fi
-
-    manifests+=("${entry}")
-  done
+  manifests+=("${entry}")
 done
 
 shopt -u globstar nullglob
@@ -196,8 +188,8 @@ failed=0
 failed_files=()
 
 for manifest in "${manifests[@]}"; do
-  # Audit filename is flattened from the path within the work dir, so the
-  # sets cannot collide: seed/run-a/app.yaml → seed_run-a_app.txt
+  # Audit filename is flattened from the path within the work dir, so child
+  # sets cannot collide: manifests/run-a/app.yaml → manifests_run-a_app.txt
   relative="${manifest#"${work_dir}/"}"
   audit_file="${audit_dir}/${relative//\//_}"
   audit_file="${audit_file%.yaml}.txt"

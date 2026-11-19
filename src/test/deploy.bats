@@ -69,7 +69,24 @@ teardown() {
   [[ "${result}" == *"sk-test-key-abc-456"* ]]
 }
 
-@test "deploy sets aside a run-platform's own set and a seed-and-compare set with its secrets assembled and applies the rest" {
+@test "deploy copies an environment's whole tree to the deploy stage and applies from there" {
+  run deploy
+  [ "$status" -eq 0 ]
+  [ -f "${TEST_RUN_BASE}/work/manifests/configmap.yaml" ]
+  cmp "${TEST_RUN_BASE}/work/manifests/configmap.yaml" "${TEST_RUN_BASE}/work/stages/deploy/configmap.yaml"
+  cmp "${TEST_RUN_BASE}/work/manifests/secret.yaml" "${TEST_RUN_BASE}/work/stages/deploy/secret.yaml"
+  grep -q -- "apply --server-side --field-manager=kaptain/env/run-test-env -R -f ${TEST_RUN_BASE}/work/stages/deploy/" "${TEST_RUN_BASE}/work/k-commands.log"
+}
+
+@test "deploy validates the complete tree, never the dirs split out of it" {
+  run deploy
+  [ "$status" -eq 0 ]
+  grep -q -- "--dry-run=server .* -f ${TEST_RUN_BASE}/work/manifests/configmap.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+  run grep -- "--dry-run=server .* -f ${TEST_RUN_BASE}/work/stages/" "${TEST_RUN_BASE}/work/k-commands.log"
+  [ "$status" -eq 1 ]
+}
+
+@test "deploy splits a run-platform's own set and a seed-and-compare set, secrets assembled, out of a tree that stays complete and applies the rest" {
   export ENVIRONMENT="run-platform-test"
   export ENVIRONMENT_TYPE="meta-env"
   mkdir -p "${TEST_RUN_BASE}/manifests/run-platform-test"
@@ -81,15 +98,27 @@ teardown() {
   cp "${FIXTURES_DIR}/templates/secret.template.yaml" "${TEST_RUN_BASE}/manifests/run-env-child/"
   run deploy
   [ "$status" -eq 0 ]
+  local tree="${TEST_RUN_BASE}/work/manifests"
   local seeded="${TEST_RUN_BASE}/work/seed/run-env-child"
+  local staged="${TEST_RUN_BASE}/work/stages/deploy"
+  # The seeded child and the run-platform's own set are copied out, assembled
   [ -f "${seeded}/secret.yaml" ]
   [[ "$(<"${seeded}/secret.yaml")" == *"super-secret-db-pass-123"* ]]
-  [ ! -e "${TEST_RUN_BASE}/work/manifests/run-env-child" ]
-  [ ! -e "${seeded}/run-environment-seed-and-compare-marker.yaml" ]
-  ! grep -q 'run-env-child' "${TEST_RUN_BASE}/work/k-commands.log"
   [ -f "${TEST_RUN_BASE}/work/self/configmap.yaml" ]
-  [ ! -e "${TEST_RUN_BASE}/work/manifests/run-platform-test" ]
-  [ -f "${TEST_RUN_BASE}/work/manifests/configmap.yaml" ]
+  # The tree they came from is still complete, less the marker
+  [ -f "${tree}/run-env-child/secret.yaml" ]
+  [ -f "${tree}/run-platform-test/configmap.yaml" ]
+  [ -f "${tree}/configmap.yaml" ]
+  [ -z "$(find "${TEST_RUN_BASE}/work" -name 'run-environment-seed-and-compare-marker.yaml')" ]
+  # Both are validated in the tree
+  grep -q -- "--dry-run=server .* -f ${tree}/run-env-child/secret.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q -- "--dry-run=server .* -f ${tree}/run-platform-test/configmap.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+  # Neither is in the stage that gets applied, and only that stage is applied
+  [ -f "${staged}/configmap.yaml" ]
+  [ ! -e "${staged}/run-env-child" ]
+  [ ! -e "${staged}/run-platform-test" ]
+  [ "$(grep -c -- "-R -f" "${TEST_RUN_BASE}/work/k-commands.log")" -eq 1 ]
+  grep -q -- "-R -f ${staged}/" "${TEST_RUN_BASE}/work/k-commands.log"
 }
 
 @test "deploy fails an environment whose manifests hold a seed-and-compare marker" {

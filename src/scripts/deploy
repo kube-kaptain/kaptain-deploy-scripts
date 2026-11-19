@@ -197,9 +197,10 @@ run decrypt-secrets
 # shellcheck disable=SC2154 # TOKEN_NAME_STYLE set by environment build process
 run "${SCRIPT_DIR}/plugins/token-name-validators/${TOKEN_NAME_STYLE}" "${decrypted}"
 run assemble-secrets
-# After the secret work so set-aside sets (a run-platform's own and its
-# seed-and-compare children) are complete; before validation and apply so those
-# only see what is applied now.
+# After the secret work so work/manifests is complete when it is copied out to
+# the dirs each step applies from (stages/deploy, and on a run-platform self
+# and seed/*); before validation because it deletes the seed-and-compare
+# markers, which are not real manifests and would fail it.
 run split-manifests
 
 # TODO also record resource types so we can show what changes somehowe

@@ -12,6 +12,12 @@
 # own set into the output. Everything else stays in the container's work dir
 # and goes with it.
 #
+# The own set is taken from its folder in work/manifests, the complete tree,
+# where it is whole: its Namespace is there, and the first apply by hand needs
+# it. work/self is the copy a deploy works from, with the Namespace moved out
+# to the namespaces stage like every other. The split still runs first, since
+# it is what removes a seed-and-compare marker from the tree.
+#
 # The output holds assembled Secrets in plain text.
 set -euo pipefail
 
@@ -77,9 +83,12 @@ decrypt-secrets
 assemble-secrets
 split-manifests
 
-cp -a "${work}/self/." "${bootstrap_dir}/"
+# shellcheck disable=SC2154 # ENVIRONMENT set by final environment image build, validated by validate-environment
+own_set="${work}/manifests/${ENVIRONMENT}"
 
-file_count=$(find "${work}/self" -type f | wc -l)
+cp -a "${own_set}/." "${bootstrap_dir}/"
+
+file_count=$(find "${own_set}" -type f | wc -l)
 # shellcheck disable=SC2154 # ENVIRONMENT and VERSION set by final environment image build, validated by validate-environment
 notify-info "Bootstrap of ${ENVIRONMENT} version ${VERSION} complete: ${file_count} manifest files in ${bootstrap_dir}"
 notify-warning "The bootstrap output holds assembled Secrets in plain text - handle and remove it accordingly"

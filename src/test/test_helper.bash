@@ -66,14 +66,180 @@ if [[ "$1" == "get" ]] && [[ "$2" == "--raw" ]]; then
   exit 0
 fi
 
+# get customresourcedefinition <name>: is it Established yet? Yes, unless a
+# test said it takes some rounds of asking with crd_established_after
+if [[ "$1" == "get" && "$2" == "customresourcedefinition" ]]; then
+  rounds_file="${RUN_BASE_PATH}/work/mock-k-cluster/crd-rounds-$3"
+  rounds_left=0
+  if [[ -f "${rounds_file}" ]]; then
+    rounds_left=$(<"${rounds_file}")
+  fi
+  if [[ "${rounds_left}" -gt 0 ]]; then
+    echo "$((rounds_left - 1))" > "${rounds_file}"
+    exit 0
+  fi
+  echo "True"
+  exit 0
+fi
+
+# create: works unless a test said otherwise
+if [[ "$1" == "create" && -f "${RUN_BASE_PATH}/work/mock-k-cluster/create-fails" ]]; then
+  echo "Error from server (Forbidden): mocks is forbidden" >&2
+  exit 1
+fi
+
 # Return empty for jsonpath queries (oci-images)
 if [[ "$*" == *"-o jsonpath"* ]] || [[ "$*" == *"-o go-template"* ]]; then
   exit 0
 fi
+
+# A small fake cluster for the scripts that compare a set with the cluster and
+# reapply it. An object is kept under the path of the manifest that declares
+# it, which is how those scripts address it too (get -f, apply -f). Tests put
+# objects in with cluster_holds and cluster_would_make.
+cluster="${RUN_BASE_PATH}/work/mock-k-cluster"
+manifest=""
+previous=""
+for argument in "$@"; do
+  if [[ "${previous}" == "-f" ]]; then
+    manifest="${argument%/}"
+  fi
+  previous="${argument}"
+done
+held="${cluster}/${manifest//\//_}"
+
+# get -f <manifest> -o yaml: the live object, or NotFound
+if [[ "$1" == "get" && "$*" == *"-o yaml"* && -n "${manifest}" ]]; then
+  if [[ -f "${cluster}/get-fails" ]]; then
+    echo "Error from server (Forbidden): mocks is forbidden" >&2
+    exit 1
+  fi
+  if [[ -f "${held}" ]]; then
+    cat "${held}"
+    exit 0
+  fi
+  echo "Error from server (NotFound): mocks \"$(basename "${manifest}")\" not found" >&2
+  exit 1
+fi
+
+# apply --dry-run=server ... -o yaml: what the object would become. The
+# manifest itself unless a test said otherwise.
+if [[ "$1" == "apply" && "$*" == *"--dry-run=server"* && "$*" == *"-o yaml"* ]]; then
+  # As kubectl words a field manager conflict, advice and all
+  if [[ -f "${cluster}/dry-run-fails" ]]; then
+    {
+      echo "error: Apply failed with 1 conflict: conflict with \"someone-else\" using apps/v1: .spec.replicas"
+      echo "Please review the fields above--they currently have other managers. Here"
+      echo "are the ways you can resolve this warning:"
+      echo "* If you intend to manage all of these fields, please re-run the apply"
+      echo "  command with the \`--force-conflicts\` flag."
+    } >&2
+    exit 1
+  fi
+  # Any other refusal
+  if [[ -f "${cluster}/dry-run-invalid-fails" ]]; then
+    echo "The mocks \"$(basename "${manifest}")\" is invalid: spec: Invalid value: field is immutable" >&2
+    exit 1
+  fi
+  if [[ -f "${held}.wanted" ]]; then
+    cat "${held}.wanted"
+  else
+    cat "${manifest}"
+  fi
+  exit 0
+fi
+
+# A real apply puts every manifest it is given into the cluster
+if [[ "$1" == "apply" && "$*" != *"--dry-run"* && -n "${manifest}" ]]; then
+  if [[ -f "${cluster}/apply-fails" ]]; then
+    echo "Apply failed with 1 conflict: conflict with \"someone-else\"" >&2
+    exit 1
+  fi
+  mkdir -p "${cluster}"
+  if [[ -d "${manifest}" ]]; then
+    while IFS= read -r applied; do
+      cp "${applied}" "${cluster}/${applied//\//_}"
+    done < <(find "${manifest}" -type f -name '*.yaml')
+  elif [[ -f "${manifest}" ]]; then
+    cp "${manifest}" "${held}"
+  fi
+fi
+
 echo "mock: $*"
 MOCK
   chmod +x "${TEST_MOCK_BIN}/k-standard"
   cp "${TEST_MOCK_BIN}/k-standard" "${TEST_MOCK_BIN}/k"
+}
+
+# Where the mock k's fake cluster keeps the object a manifest declares
+cluster_path() {
+  local manifest="$1"
+  printf '%s/work/mock-k-cluster/%s' "${RUN_BASE_PATH}" "${manifest//\//_}"
+}
+
+# Put an object in the fake cluster as the live form of a manifest. With no
+# document it is the manifest as written, which is what the cluster holds
+# straight after that manifest was applied.
+cluster_holds() {
+  local manifest="$1"
+  local document="${2:-$1}"
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  cp "${document}" "$(cluster_path "${manifest}")"
+}
+
+# Say what a dry-run of a manifest answers, when it is not just the manifest:
+# the object as it would be, with whatever other managers own still on it
+cluster_would_make() {
+  local manifest="$1"
+  local document="$2"
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  cp "${document}" "$(cluster_path "${manifest}").wanted"
+}
+
+# Make one kind of call to the fake cluster fail: get, dry-run, dry-run-invalid,
+# apply or create. Both dry-run kinds are the one that asks for the result
+# (-o yaml): dry-run is refused as a field manager conflict, dry-run-invalid
+# for another reason. install_mock_k_failing_dry_run rejects every dry-run.
+cluster_fails() {
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  touch "${RUN_BASE_PATH}/work/mock-k-cluster/$1-fails"
+}
+
+# Make a CRD answer "not Established yet" for that many rounds of asking
+crd_established_after() {
+  local name="$1"
+  local rounds="$2"
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  echo "${rounds}" > "${RUN_BASE_PATH}/work/mock-k-cluster/crd-rounds-${name}"
+}
+
+# The script a run-platform build generates for a child that brings a role
+# binding in its own namespace. This one records how it was called, in
+# work/role-binding-commands.log, and refuses if a test asked it to with
+# child_role_binding_script_refuses. It also records, in
+# work/role-binding-order.log, how many calls k had taken by then, so a test
+# can tell what it came before and after.
+install_child_role_binding_script() {
+  local child="$1"
+  cat > "${TEST_MOCK_BIN}/k-${child}-role-binding-only" << MOCK
+#!/usr/bin/env bash
+echo "k-${child}-role-binding-only \$*" >> "\${RUN_BASE_PATH}/work/role-binding-commands.log"
+k_calls=0
+if [[ -f "\${RUN_BASE_PATH}/work/k-commands.log" ]]; then
+  k_calls=\$(wc -l < "\${RUN_BASE_PATH}/work/k-commands.log")
+fi
+echo "\$((k_calls)) \$*" >> "\${RUN_BASE_PATH}/work/role-binding-order.log"
+if [[ -f "\${RUN_BASE_PATH}/work/role-binding-refused-${child}" ]]; then
+  echo "refused: \$*" >&2
+  exit 1
+fi
+echo "mock: k-${child}-role-binding-only \$*"
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/k-${child}-role-binding-only"
+}
+
+child_role_binding_script_refuses() {
+  touch "${RUN_BASE_PATH}/work/role-binding-refused-$1"
 }
 
 # Every dry-run is rejected, everything else behaves as the standard mock does.

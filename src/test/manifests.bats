@@ -72,6 +72,99 @@ teardown() {
   [[ "$output" == *"Validation failed"* ]]
 }
 
+# validate-manifests: only a run-platform may bring CRDs or Namespaces
+#
+# split-manifests puts every CRD it finds in the crds stage and every Namespace
+# in the namespaces stage, so on an environment deploy both stages have to be
+# empty. The build is meant to refuse them first; this is the second lock.
+
+write_staged_crd() {
+  local relative="$1"
+  local file="${TEST_RUN_BASE}/work/stages/crds/${relative}"
+  mkdir -p "$(dirname "${file}")"
+  printf 'apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: widgets.example.com\n' > "${file}"
+}
+
+write_staged_namespace() {
+  local relative="$1"
+  local file="${TEST_RUN_BASE}/work/stages/namespaces/${relative}"
+  mkdir -p "$(dirname "${file}")"
+  printf 'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: somewhere\n' > "${file}"
+}
+
+@test "validate-manifests fails an environment deploy that holds a Namespace" {
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_staged_namespace app-one/namespace.yaml
+  run validate-manifests
+  [ "$status" -eq 52 ]
+  [[ "$output" == *"Namespaces in a env deploy: 1"* ]]
+  [[ "$output" == *"Namespaces belong to the cluster, not to an environment. Only the run-platform manages them. Move them out of test-env and into the run-platform:"* ]]
+  [[ "$output" == *"  - app-one/namespace.yaml"* ]]
+}
+
+@test "validate-manifests lists every Namespace an environment deploy holds" {
+  write_staged_namespace app-one/namespace.yaml
+  write_staged_namespace app-two/nested/another.yaml
+  write_staged_namespace shared-namespace.yaml
+  run validate-manifests
+  [ "$status" -eq 52 ]
+  [[ "$output" == *"Namespaces in a env deploy: 3"* ]]
+  [[ "$output" == *"  - app-one/namespace.yaml"* ]]
+  [[ "$output" == *"  - app-two/nested/another.yaml"* ]]
+  [[ "$output" == *"  - shared-namespace.yaml"* ]]
+}
+
+@test "validate-manifests refuses an environment's Namespaces before asking the cluster anything" {
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_staged_namespace app-one/namespace.yaml
+  run validate-manifests
+  [ "$status" -eq 52 ]
+  [ ! -f "${TEST_RUN_BASE}/work/k-commands.log" ]
+}
+
+@test "validate-manifests lets a run-platform deploy hold Namespaces" {
+  export ENVIRONMENT_TYPE="meta-env"
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_staged_namespace run-env-a/namespace.yaml
+  run validate-manifests
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-manifests passes an environment deploy whose namespaces and crds stages are empty" {
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  mkdir -p "${TEST_RUN_BASE}/work/stages/namespaces" "${TEST_RUN_BASE}/work/stages/crds"
+  run validate-manifests
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-manifests fails an environment deploy that holds a CRD" {
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_staged_crd app-one/widget-crd.yaml
+  run validate-manifests
+  [ "$status" -eq 52 ]
+  [[ "$output" == *"CRDs in a env deploy: 1"* ]]
+  [[ "$output" == *"CRDs belong to the cluster, not to an environment. Only the run-platform manages them. Move them out of test-env and into the run-platform:"* ]]
+  [[ "$output" == *"  - app-one/widget-crd.yaml"* ]]
+  [ ! -f "${TEST_RUN_BASE}/work/k-commands.log" ]
+}
+
+@test "validate-manifests reports an environment's CRDs and its Namespaces together" {
+  write_staged_crd app-one/widget-crd.yaml
+  write_staged_namespace app-one/namespace.yaml
+  run validate-manifests
+  [ "$status" -eq 52 ]
+  [[ "$output" == *"CRDs in a env deploy: 1"* ]]
+  [[ "$output" == *"Namespaces in a env deploy: 1"* ]]
+}
+
+@test "validate-manifests lets a run-platform deploy hold CRDs" {
+  export ENVIRONMENT_TYPE="meta-env"
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_staged_crd app-one/widget-crd.yaml
+  run validate-manifests
+  [ "$status" -eq 0 ]
+}
+
 # validate-manifests kind pre-check tests
 #
 # An unresolvable kind makes kubectl throw away its discovery cache and refetch

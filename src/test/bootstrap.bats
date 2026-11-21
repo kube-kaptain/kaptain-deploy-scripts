@@ -52,6 +52,17 @@ teardown() {
   [[ "$output" == *"plain text"* ]]
 }
 
+@test "bootstrap writes the run-platform's own Namespace to the output, though a deploy moves it out of self" {
+  printf 'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n' "${SELF_NAME}" > "${MANIFESTS}/${SELF_NAME}/namespace.yaml"
+  run bootstrap
+  [ "$status" -eq 0 ]
+  [ -f "${OUT}/namespace.yaml" ]
+  [ -f "${OUT}/configmap.yaml" ]
+  [ -f "${OUT}/secret.yaml" ]
+  [ ! -e "${TEST_RUN_BASE}/work/self/namespace.yaml" ]
+  [[ "$output" == *"complete: 3 manifest files in ${OUT}"* ]]
+}
+
 @test "bootstrap writes only the run-platform's own set to the output" {
   run bootstrap
   [ "$status" -eq 0 ]

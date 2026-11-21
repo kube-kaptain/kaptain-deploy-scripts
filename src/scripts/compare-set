@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Compare a set of manifests with the cluster: does it need applying?
+#
+# One pass over the files in the set. For each, fetch the live object. If it is
+# not there the file is "missing". If it is, ask the cluster what the object
+# would become were the file applied (a server-side dry-run) and compare that
+# with the live object, both stripped of what a compare ignores (see
+# lib/reapply.bash). If they are not the same the file "differs".
+#
+# Comparing with the dry-run result rather than with the file is what makes it
+# exact. Both sides carry the same server defaults and the same fields other
+# managers own, which cancel out, and a field removed from the file shows as
+# removed.
+#
+# The answer is a file, work/audit/compare/<set>/differences, one line for each
+# file that is missing or differs. Empty means the set matches the cluster and
+# applying it would change nothing that matters. The exit status only says
+# whether the compare could be done.
+#
+# Usage: compare-set <set-dir>
+#   <set-dir> is a dir under work, such as work/self or work/seed/<child>
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "Usage: compare-set <set-dir>" >&2
+  exit 42
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=src/scripts/lib/reapply.bash
+source "${SCRIPT_DIR}/lib/reapply.bash"
+
+set_dir="${1%/}"
+work="${RUN_BASE_PATH:-/kd}/work"
+name="${set_dir#"${work}/"}"
+compare_dir="${work}/audit/compare/${name}"
+differences="${compare_dir}/differences"
+
+if [[ ! -d "${set_dir}" ]]; then
+  notify-error "Set to compare does not exist: ${set_dir}"
+  exit 1
+fi
+
+mkdir -p "${compare_dir}"
+: > "${differences}"
+
+shopt -s globstar nullglob
+for file in "${set_dir}"/**/*.yaml; do
+  relative="${file#"${set_dir}/"}"
+  # Kept for inspection, flattened: nested/app.yaml → nested_app.live.yaml
+  kept="${compare_dir}/${relative//\//_}"
+  kept="${kept%.yaml}"
+  live="${kept}.live.yaml"
+  wanted="${kept}.wanted.yaml"
+  errors="${kept}.err"
+
+  if ! k get -f "${file}" -o yaml > "${live}" 2> "${errors}"; then
+    rm -f "${live}"
+    if grep -q "(NotFound)" "${errors}"; then
+      rm -f "${errors}"
+      echo "${relative} missing" >> "${differences}"
+      log "${name}/${relative}: missing"
+      continue
+    fi
+    notify-error "Could not read the live object for ${name}/${relative} - inspect ${errors}"
+    exit 1
+  fi
+
+  if ! k apply --dry-run=server --server-side --field-manager="$(field_manager)" -f "${file}" -o yaml > "${wanted}" 2> "${errors}"; then
+    # Not left behind unstripped: either could be a Secret
+    rm -f "${live}" "${wanted}"
+
+    # A conflict is its own case and gets its own words. Something other than
+    # a deploy has changed a field this file sets, to a different value, and
+    # the cluster will not let an apply change it back without being told to.
+    # That is drift for a person to look at, not for a deploy to force.
+    if grep -q "conflict" "${errors}"; then
+      notify-error "The cluster will not let ${name}/${relative} be applied: something else now owns a field it sets.
+$(sed '/^Please review/,$d' "${errors}")
+This needs someone to look. If what the file says is right, take the field back by hand: apply-force ${file}
+The full refusal is in ${errors}"
+      exit 1
+    fi
+
+    notify-error "Could not ask the cluster what ${name}/${relative} would become - inspect ${errors}"
+    exit 1
+  fi
+  rm -f "${errors}"
+
+  yq --inplace "${COMPARE_STRIP}" "${live}"
+  yq --inplace "${COMPARE_STRIP}" "${wanted}"
+
+  if cmp -s "${live}" "${wanted}"; then
+    log "${name}/${relative}: same"
+  else
+    echo "${relative} differs" >> "${differences}"
+    log "${name}/${relative}: differs"
+  fi
+
+  # A Secret's content stays out of the audit dir. The verdict is enough.
+  if [[ "$(yq '.kind' "${file}")" == "Secret" ]]; then
+    rm -f "${live}" "${wanted}"
+  fi
+done
+shopt -u globstar nullglob

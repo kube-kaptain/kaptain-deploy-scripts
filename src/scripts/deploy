@@ -18,6 +18,10 @@ RUN_COMMAND=""
 POST_DEPLOY_SLEEP_SUCCESS="${POST_DEPLOY_SLEEP_SUCCESS:-600}"    # 10 minutes
 POST_DEPLOY_SLEEP_FAILURE="${POST_DEPLOY_SLEEP_FAILURE:-86400}"  # 24 hours
 
+# How long a run-platform that has just reapplied its own manifests waits for
+# Kubernetes to replace it before reporting that the replacement never came
+SELF_REPLACEMENT_WAIT="${SELF_REPLACEMENT_WAIT:-600}"            # 10 minutes
+
 # Interruptible sleep using read builtin - signals interrupt immediately
 # unlike external sleep which blocks trap handlers until it completes.
 # fd 9 holds a self-referencing FIFO (writer never closes) so read -t blocks
@@ -140,6 +144,12 @@ Check pod logs for more detail or exec in and inspect the audit directory."
 }
 trap 'handle_err' ERR
 
+# Fails the deploy through handle_err, so the failure is reported and the pod
+# kept for inspection like any other
+replacement_never_came() {
+  return 60
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/lib"
 
@@ -208,11 +218,73 @@ run scan-images "before"
 
 # TODO verify that the env is in a decent shape and note down details of bad stuff so we can ensre it hasn't gotten worse
 
+# CRDs and Namespaces go in before anything else is even validated. A resource
+# of a custom kind cannot be dry-run until its CRD is in the cluster, and
+# nothing can be dry-run into a namespace that is not there. Each is dry-run
+# and applied as one step, CRDs first, and each is its own uninterruptible
+# phase: a SIGTERM during the CRDs is honoured before the Namespaces start.
+# Only a run-platform brings either.
+# shellcheck disable=SC2154 # ENVIRONMENT_TYPE set by final environment image build, validated by validate-environment
+if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
+  change_phase true "Applying CRDs"
+  run apply-crds
+  change_phase true "Applying Namespaces"
+  run apply-namespaces
+fi
+
 change_phase false "Validating manifests"
 run validate-manifests
+# The one kind of manifest k cannot dry-run, which split-manifests took out of
+# the tree: a child's role binding in the child's own namespace
+if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
+  run validate-child-role-bindings
+fi
+
+# A run-platform looks at itself before it deploys anything, so that it never
+# does so on stale config or secrets. Only CRDs and Namespaces are in by now,
+# and they use none of it.
+if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
+  change_phase true "Reapplying own manifests if changed"
+  run reapply-self-if-changed
+
+  case "$(<"${work}/self-outcome")" in
+    continue)
+      ;;
+    stand-down)
+      # Deployment mode: the apply changed our own pod template, so Kubernetes
+      # is replacing this pod with one that mounts the new config. That pod
+      # does the deploy. This one must not, and it must not exit either: the
+      # container would restart in the same pod, still on the old config.
+      change_phase false "Waiting to be replaced"
+      notify-info "Waiting up to ${SELF_REPLACEMENT_WAIT}s to be replaced by a pod running the reapplied manifests"
+      interruptible_sleep "${SELF_REPLACEMENT_WAIT}"
+      notify-error "Reapplied our own manifests ${SELF_REPLACEMENT_WAIT}s ago and this pod has not been replaced - the new pod is probably failing to start"
+      replacement_never_came
+      ;;
+    handed-over)
+      # Job mode: a new Job, started from the reapplied CronJob, does the deploy
+      change_phase false "Handed over"
+      exit 0
+      ;;
+    *)
+      notify-error "reapply-self-if-changed left no outcome deploy understands in ${work}/self-outcome"
+      exit 42
+      ;;
+  esac
+fi
 
 change_phase true "Applying manifests"
+# On a run-platform, each child's role binding in its own namespace goes in
+# first, before the child's deployer needs it
+if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
+  run apply-child-role-bindings
+fi
 run apply-manifests
+# After the rest of the run-platform is applied: child environments marked
+# seed-and-compare are seeded, or reapplied only if something real changed
+if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
+  run reapply-seeds-if-changed
+fi
 # TODO apply in a more sophisticated way
 # TODO verify things are happy after this action - await happiness - but don't accept increasing restarts on anything declared
 # TODO clean up stuff we don't have declared - leave the environment exactly as declared

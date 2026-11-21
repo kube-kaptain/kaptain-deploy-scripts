@@ -17,6 +17,39 @@ mkdir -p "${audit_dir}"
 
 shopt -s globstar nullglob
 
+# Only a run-platform may bring CRDs or Namespaces. split-manifests has put
+# every one it found in the tree into its own stage, so on any other deploy
+# both of those stages have to be empty. An environment build is meant to
+# refuse them long before this; this is the second lock, and it needs nothing
+# from the cluster. Both kinds are reported before failing.
+if [[ "${ENVIRONMENT_TYPE:-}" != "meta-env" ]]; then
+  refused_kinds=0
+  for stage in crds namespaces; do
+    stage_dir="${work_dir}/stages/${stage}"
+    mapfile -t not_allowed < <(find "${stage_dir}" -type f 2>/dev/null | sort)
+    [[ ${#not_allowed[@]} -gt 0 ]] || continue
+
+    if [[ "${stage}" == "crds" ]]; then
+      kind_name="CRDs"
+    else
+      kind_name="Namespaces"
+    fi
+
+    message="${kind_name} in a ${ENVIRONMENT_TYPE:-unset} deploy: ${#not_allowed[@]}"
+    # shellcheck disable=SC2154 # ENVIRONMENT set by final environment image build, validated by validate-environment
+    message+=$'\n'"${kind_name} belong to the cluster, not to an environment. Only the run-platform manages them. Move them out of ${ENVIRONMENT} and into the run-platform:"
+    for entry in "${not_allowed[@]}"; do
+      message+=$'\n'"  - ${entry#"${stage_dir}/"}"
+    done
+    notify-error "${message}"
+    refused_kinds=$((refused_kinds + 1))
+  done
+
+  if [[ ${refused_kinds} -gt 0 ]]; then
+    exit 52
+  fi
+fi
+
 # The complete tree and nothing else. Every dir a later step applies from is a
 # copy of files in it, made by split-manifests, so validating this one tree
 # validates everything that will be applied: a run-platform's own set and its

@@ -676,3 +676,53 @@ MOCK
   run deploy
   [[ "$output" == *"Sleeping forever for inspection"* ]]
 }
+
+# What children have delegated to a run-platform
+
+# A run-platform whose seeded child has delegated one cluster-scoped resource
+run_platform_with_a_delegating_seed() {
+  run_platform_with_one_seed
+  DELEGATED="${TEST_RUN_BASE}/cluster-scoped-on-behalf/run-env-child"
+  DELEGATED_FILE="vendor-thing/${2:-clusterrole.yaml}"
+  mkdir -p "${DELEGATED}/vendor-thing"
+  printf 'apiVersion: rbac.authorization.k8s.io/v1\nkind: %s\nmetadata:\n  name: run-env-child:vendor-thing\n' "${1:-ClusterRole}" \
+    > "${DELEGATED}/${DELEGATED_FILE}"
+}
+
+@test "deploy on a run-platform validates what a child delegated, then applies it before the rest and the seeds" {
+  run_platform_with_a_delegating_seed
+  run deploy
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Deployment complete"* ]]
+  local dry_run own applied rest seed
+  dry_run=$(line_of "--dry-run=server --server-side --field-manager=kaptain/env/run-env-child -f ${DELEGATED}/${DELEGATED_FILE}")
+  own=$(line_of "-R -f ${SELF_SET}")
+  applied=$(line_of "apply --server-side --field-manager=kaptain/env/run-env-child -R -f ${DELEGATED}")
+  rest=$(line_of "-R -f ${STAGED}/")
+  seed=$(line_of "-R -f ${SEED_SET}")
+  [ "${dry_run}" -lt "${own}" ]
+  [ "${own}" -lt "${applied}" ]
+  [ "${applied}" -lt "${rest}" ]
+  [ "${rest}" -lt "${seed}" ]
+}
+
+@test "deploy on a run-platform applies nothing when a child has delegated a CRD" {
+  run_platform_with_a_delegating_seed CustomResourceDefinition customresourcedefinition-widget.yaml
+  run deploy
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"CRDs and Namespaces delegated by run-env-child: 1"* ]]
+  [[ "$output" == *"Move them out of run-env-child and into the run-platform:"* ]]
+  [[ "$output" == *"  - vendor-thing/customresourcedefinition-widget.yaml (CustomResourceDefinition)"* ]]
+  run grep -- "-R -f" "${K_LOG}"
+  [ "$status" -eq 1 ]
+}
+
+@test "deploy on an environment leaves its own on-behalf dir alone" {
+  mkdir -p "${TEST_RUN_BASE}/cluster-scoped-on-behalf/vendor-thing"
+  printf 'apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: run-test-env:vendor-thing\n' \
+    > "${TEST_RUN_BASE}/cluster-scoped-on-behalf/vendor-thing/clusterrole.yaml"
+  run deploy
+  [ "$status" -eq 0 ]
+  run grep -- "cluster-scoped-on-behalf" "${TEST_RUN_BASE}/work/k-commands.log"
+  [ "$status" -eq 1 ]
+}

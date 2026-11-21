@@ -234,10 +234,13 @@ fi
 
 change_phase false "Validating manifests"
 run validate-manifests
-# The one kind of manifest k cannot dry-run, which split-manifests took out of
-# the tree: a child's role binding in the child's own namespace
+# Two things a run-platform applies that are not in the tree, each validated
+# its own way. A child's role binding in the child's own namespace, which k
+# cannot dry-run and split-manifests took out. And the cluster-scoped resources
+# children have delegated, which go in under each child's field manager.
 if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
   run validate-child-role-bindings
+  run validate-on-behalf
 fi
 
 # A run-platform looks at itself before it deploys anything, so that it never
@@ -274,10 +277,12 @@ if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
 fi
 
 change_phase true "Applying manifests"
-# On a run-platform, each child's role binding in its own namespace goes in
-# first, before the child's deployer needs it
+# On a run-platform, what its children need of it goes in first, before any
+# child's deployer: each child's role binding in its own namespace, then the
+# cluster-scoped resources each child has delegated
 if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
   run apply-child-role-bindings
+  run apply-on-behalf
 fi
 run apply-manifests
 # After the rest of the run-platform is applied: child environments marked

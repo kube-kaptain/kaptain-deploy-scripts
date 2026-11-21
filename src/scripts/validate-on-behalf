@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Validate the cluster-scoped resources child environments have delegated to
+# this run-platform.
+#
+# An environment with parent delegation holds admin of its own namespace only,
+# so its build moves its cluster-scoped resources (ClusterRoles, webhooks,
+# GatewayClasses and so on) out of its own image and into the run-platform's,
+# at /kd/cluster-scoped-on-behalf/<child>. They are finished manifests: no
+# tokens, no secrets, nothing to prepare. They are read where they are.
+#
+# They are applied under the child's field manager, kaptain/env/<child>, so
+# that ownership reads as if the child had applied them itself. That is why
+# validate-manifests, which dry-runs under the run-platform's own, cannot
+# cover them.
+#
+# For every child, before the cluster is asked anything:
+#   - Only .yaml files, the same rule as the tree and for the same reason:
+#     kubectl would apply a .yml or .json that was never dry-run.
+#   - No CRD and no Namespace. Those belong to the cluster, not to an
+#     environment, and only the run-platform manages them. An environment
+#     cannot bring them by handing them to its run-platform either. Its build
+#     is meant to refuse them first; this is the second lock.
+# Then each file is dry-run under the child's field manager.
+#
+# Every problem of a kind is reported before failing.
+#
+# Run-platform deploys only (ENVIRONMENT_TYPE=meta-env).
+set -euo pipefail
+
+if [[ "${ENVIRONMENT_TYPE:-}" != "meta-env" ]]; then
+  notify-error "Only a run-platform (meta-env) deploy validates resources delegated to it, this is ${ENVIRONMENT_TYPE:-unset}"
+  exit 1
+fi
+
+base="${RUN_BASE_PATH:-/kd}"
+on_behalf_dir="${base}/cluster-scoped-on-behalf"
+audit_dir="${base}/work/audit/validation"
+
+if [[ ! -d "${on_behalf_dir}" ]]; then
+  log "No child has delegated cluster-scoped resources"
+  exit 0
+fi
+
+mkdir -p "${audit_dir}"
+
+shopt -s globstar nullglob
+
+# What may be in there at all, for every child, before any dry-run
+not_yaml=()
+children_refused=0
+for child_dir in "${on_behalf_dir}"/*; do
+  [[ -d "${child_dir}" ]] || continue
+  child=$(basename "${child_dir}")
+
+  manifests=()
+  for entry in "${child_dir}"/**/*; do
+    [[ -f "${entry}" ]] || continue
+    if [[ "${entry}" != *.yaml ]]; then
+      not_yaml+=("${entry#"${on_behalf_dir}/"}")
+      continue
+    fi
+    manifests+=("${entry}")
+  done
+  [[ ${#manifests[@]} -gt 0 ]] || continue
+
+  if ! kinds=$(yq -N '[filename, .kind // ""] | join("|")' "${manifests[@]}"); then
+    notify-error "Could not read the resources ${child} has delegated"
+    exit 1
+  fi
+  not_allowed=()
+  while IFS='|' read -r manifest kind; do
+    if [[ "${kind}" == "CustomResourceDefinition" || "${kind}" == "Namespace" ]]; then
+      not_allowed+=("${manifest#"${child_dir}/"} (${kind})")
+    fi
+  done <<< "${kinds}"
+
+  # Said once for each child that has any, naming the child, so whoever owns
+  # it knows it is theirs to move
+  if [[ ${#not_allowed[@]} -gt 0 ]]; then
+    message="CRDs and Namespaces delegated by ${child}: ${#not_allowed[@]}"
+    message+=$'\n'"CRDs and Namespaces belong to the cluster, not to an environment. Only the run-platform manages them. Move them out of ${child} and into the run-platform:"
+    for entry in "${not_allowed[@]}"; do
+      message+=$'\n'"  - ${entry}"
+    done
+    notify-error "${message}"
+    children_refused=$((children_refused + 1))
+  fi
+done
+
+if [[ ${#not_yaml[@]} -gt 0 ]]; then
+  message="Files delegated to this run-platform that are not .yaml: ${#not_yaml[@]}"
+  for entry in "${not_yaml[@]}"; do
+    message+=$'\n'"  - ${entry}"
+  done
+  notify-error "${message}"
+  exit 51
+fi
+
+if [[ ${children_refused} -gt 0 ]]; then
+  exit 52
+fi
+
+scanned=0
+refused=()
+for child_dir in "${on_behalf_dir}"/*; do
+  [[ -d "${child_dir}" ]] || continue
+  child=$(basename "${child_dir}")
+
+  for manifest in "${child_dir}"/**/*.yaml; do
+    relative="${manifest#"${on_behalf_dir}/"}"
+    audit_file="${audit_dir}/on-behalf_${relative//\//_}"
+    audit_file="${audit_file%.yaml}.txt"
+    scanned=$((scanned + 1))
+
+    if ! k apply --dry-run=server --server-side --field-manager="kaptain/env/${child}" -f "${manifest}" > "${audit_file}" 2>&1; then
+      refused+=("${relative}")
+    fi
+  done
+done
+shopt -u globstar nullglob
+
+if [[ ${#refused[@]} -gt 0 ]]; then
+  message="Delegated resources refused by the cluster: ${#refused[@]}/${scanned}"
+  for entry in "${refused[@]}"; do
+    message+=$'\n'"  - ${entry}"
+  done
+  message+=$'\n'"Inspect ${audit_dir}/on-behalf_*.txt"
+  notify-error "${message}"
+  exit 1
+fi
+
+log "Validated ${scanned} delegated cluster-scoped resource(s)"

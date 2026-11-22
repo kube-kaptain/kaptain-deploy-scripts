@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Record what the deploy starts from, before it applies anything that runs.
+# Nothing here changes the cluster. The check after the deploy reads these to
+# tell what got worse and which Jobs are this deploy's to wait for.
+#
+# Five files in work/baseline, one line per entry, sorted. Each is made from
+# the one before it. Beside them, in work/baseline/oci-images, goes the list of
+# images in use before the deploy, which scan-images takes.
+#
+#   all            every manifest in work/manifests that holds a pod spec, of
+#                  whatever kind: <kind>|<name>|<file within work/manifests>
+#   to-check       all, without CronJobs. A CronJob makes its Jobs later, on
+#                  its schedule, so a deploy cannot see whether it works.
+#   long-running   to-check, without Jobs. What is meant to come up and stay up.
+#   restart-counts the live pods of everything in long-running:
+#                  <pod name>|<restarts, summed over its containers and init
+#                  containers>. The count belongs to the pod: a pod not in this
+#                  file when the deploy is checked is a new one, held to zero.
+#   new-jobs       the Jobs in to-check that the cluster does not have yet,
+#                  same line as all. A Job that was here before this deploy ran
+#                  is not this deploy's to care about, whatever became of it.
+#
+# A workload is found by its shape, not its kind: any manifest with a pod spec
+# in it, which covers custom kinds as well as the built-in ones.
+#
+# A workload's pods are the ones labelled app or app.kubernetes.io/name with
+# its name, which is what Kaptain requires on every pod template. A pod template
+# with neither is logged, and its pods are not recorded. A bare Pod is its own
+# pod. Pods that have finished (Succeeded, Failed) or are being deleted are left
+# out: their counts can no longer rise.
+#
+# Runs once per container. A baseline taken again after an apply would not be
+# one, so if work/baseline is already there it refuses.
+set -euo pipefail
+
+base="${RUN_BASE_PATH:-/kd}"
+manifests_dir="${base}/work/manifests"
+baseline_dir="${base}/work/baseline"
+
+all="${baseline_dir}/all"
+to_check="${baseline_dir}/to-check"
+long_running="${baseline_dir}/long-running"
+restart_counts="${baseline_dir}/restart-counts"
+new_jobs="${baseline_dir}/new-jobs"
+
+# Every pod template in a document: each map whose spec holds a containers
+# list. That is a Pod itself, a Deployment's template, a CronJob's job template
+# and the same in any custom kind. A CRD's schema describing such a thing has a
+# map there, not a list, and is not matched.
+# shellcheck disable=SC2016 # A yq expression, not shell
+POD_TEMPLATES='[.. | select(tag == "!!map") | select(.spec | tag == "!!map") | select(.spec.containers | tag == "!!seq")]'
+
+# Every live pod whose restart count can still rise, as
+# <name>|<app label>|<app.kubernetes.io/name label>|<restarts>
+# shellcheck disable=SC2016 # A yq expression, not shell
+LIVE_PODS='
+  .items[]
+  | select(.metadata.deletionTimestamp == null)
+  | select(.status.phase == "Pending" or .status.phase == "Running" or .status.phase == "Unknown")
+  | [
+      .metadata.name,
+      .metadata.labels.app // "",
+      .metadata.labels["app.kubernetes.io/name"] // "",
+      ([.status.initContainerStatuses[].restartCount, .status.containerStatuses[].restartCount] | .[] as $count ireduce (0; . + $count))
+    ]
+  | join("|")
+'
+
+if [[ -e "${baseline_dir}" ]]; then
+  notify-error "The baseline has already been recorded in this container, refusing to record it again: ${baseline_dir} exists"
+  exit 1
+fi
+
+shopt -s globstar nullglob
+manifests=("${manifests_dir}"/**/*.yaml)
+shopt -u globstar nullglob
+
+if [[ ${#manifests[@]} -eq 0 ]]; then
+  notify-error "No manifest files found to record a baseline for in ${manifests_dir}"
+  exit 43
+fi
+
+mkdir -p "${baseline_dir}"
+
+# 1. Every workload declared, one yq for the lot
+if ! workloads=$(yq -N 'select('"${POD_TEMPLATES}"' | length > 0) | [.kind // "", .metadata.name // "", filename] | join("|")' "${manifests[@]}"); then
+  notify-error "Could not read the manifests to find the workloads they declare"
+  exit 1
+fi
+
+: > "${all}.unsorted"
+while IFS='|' read -r kind name file; do
+  [[ -n "${kind}" ]] || continue
+  printf '%s|%s|%s\n' "${kind}" "${name}" "${file#"${manifests_dir}/"}" >> "${all}.unsorted"
+done <<< "${workloads}"
+LC_ALL=C sort "${all}.unsorted" > "${all}"
+rm "${all}.unsorted"
+
+# 2. Without CronJobs, 3. and then without Jobs
+awk -F'|' '$1 != "CronJob"' "${all}" > "${to_check}"
+awk -F'|' '$1 != "Job"' "${to_check}" > "${long_running}"
+
+# 4. The restart count of every live pod of a long-running workload. One read
+# of the namespace's pods, then each workload picks its own out of it.
+# shellcheck disable=SC2154 # ENVIRONMENT set by final environment image build, validated by validate-environment
+if ! pods=$(k get pods -o json | yq -p=json -N "${LIVE_PODS}"); then
+  notify-error "Could not read the pods in ${ENVIRONMENT} to record their restart counts"
+  exit 1
+fi
+
+: > "${restart_counts}.unsorted"
+while IFS='|' read -r kind name file; do
+  [[ -n "${kind}" ]] || continue
+
+  if [[ "${kind}" == "Pod" ]]; then
+    awk -F'|' -v name="${name}" '$1 == name { print $1 "|" $4 }' <<< "${pods}" >> "${restart_counts}.unsorted"
+    continue
+  fi
+
+  # shellcheck disable=SC2016 # A yq expression, not shell
+  if ! labelled=$(NAME="${name}" yq "${POD_TEMPLATES}"' | .[0].metadata.labels | (.app == strenv(NAME) or .["app.kubernetes.io/name"] == strenv(NAME))' "${manifests_dir}/${file}"); then
+    notify-error "Could not read the pod template labels of ${kind} ${name} in ${file}"
+    exit 1
+  fi
+  if [[ "${labelled}" != "true" ]]; then
+    log "${kind} ${name} has neither app nor app.kubernetes.io/name set to its name on its pod template, so its pods cannot be found: ${file}"
+    continue
+  fi
+
+  awk -F'|' -v name="${name}" '$2 == name || $3 == name { print $1 "|" $4 }' <<< "${pods}" >> "${restart_counts}.unsorted"
+done < "${long_running}"
+# Unique as well as sorted: two workloads of the same name find the same pods
+LC_ALL=C sort -u "${restart_counts}.unsorted" > "${restart_counts}"
+rm "${restart_counts}.unsorted"
+
+# 5. The Jobs the cluster does not have yet
+: > "${new_jobs}"
+error_file="$(mktemp)"
+while IFS='|' read -r kind name file; do
+  [[ "${kind}" == "Job" ]] || continue
+
+  if k get -f "${manifests_dir}/${file}" -o name > /dev/null 2> "${error_file}" < /dev/null; then
+    continue
+  fi
+  if ! grep -q "(NotFound)" "${error_file}"; then
+    notify-error "Could not ask the cluster whether Job ${name} is already there: $(<"${error_file}")"
+    rm -f "${error_file}"
+    exit 1
+  fi
+  printf '%s|%s|%s\n' "${kind}" "${name}" "${file}" >> "${new_jobs}"
+done < "${to_check}"
+rm -f "${error_file}"
+
+# 6. The images in use before the deploy. Last, as it asks the cluster the
+# most and nothing above depends on it.
+scan-images before
+
+log "Workloads declared: $(wc -l < "${all}" | tr -d ' '), to check: $(wc -l < "${to_check}" | tr -d ' '), long-running: $(wc -l < "${long_running}" | tr -d ' '), new Jobs: $(wc -l < "${new_jobs}" | tr -d ' ')"
+
+restarted=$(awk -F'|' '$2 > 0' "${restart_counts}" | wc -l | tr -d ' ')
+log "Recorded restart counts for $(wc -l < "${restart_counts}" | tr -d ' ') pod(s), ${restarted} have restarted"
+while IFS='|' read -r pod count; do
+  [[ -n "${pod}" && "${count}" -gt 0 ]] || continue
+  log "  ${pod} has restarted ${count} time(s)"
+done < "${restart_counts}"

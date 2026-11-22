@@ -3,7 +3,9 @@
 # Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
 #
 # Scan cluster workloads and extract OCI images.
-# Outputs unsorted and sorted unique lists.
+# Outputs unsorted and sorted unique lists, to work/baseline/oci-images: the
+# "before" list is part of the baseline and record-baseline takes it, and the
+# "after" list is kept beside it for notify-images-changed to compare.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -14,7 +16,7 @@ fi
 label="$1"
 
 base="${RUN_BASE_PATH:-/kd}"
-output_dir="${base}/work/oci-images"
+output_dir="${base}/work/baseline/oci-images"
 unsorted="${output_dir}/oci-images-${label}-unsorted"
 sorted="${output_dir}/oci-images-${label}-sorted"
 

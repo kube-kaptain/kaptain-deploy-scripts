@@ -213,11 +213,6 @@ run assemble-secrets
 # markers, which are not real manifests and would fail it.
 run split-manifests
 
-# TODO also record resource types so we can show what changes somehowe
-run scan-images "before"
-
-# TODO verify that the env is in a decent shape and note down details of bad stuff so we can ensre it hasn't gotten worse
-
 # CRDs and Namespaces go in before anything else is even validated. A resource
 # of a custom kind cannot be dry-run until its CRD is in the cluster, and
 # nothing can be dry-run into a namespace that is not there. Each is dry-run
@@ -242,6 +237,17 @@ if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
   run validate-child-role-bindings
   run validate-on-behalf
 fi
+
+# What the deploy starts from: the workloads declared, the restart count of
+# each of their pods, which declared Jobs the cluster does not have yet, and
+# the images in use (the "before" list the scan after the deploy is compared
+# with).
+# TODO also record resource types so we can show what changes somehowe
+# After validation, so the manifests it reads are known to be sound, and before
+# anything that runs is applied: only CRDs and Namespaces are in by now, and
+# they restart nothing. Nothing reads it yet.
+change_phase false "Recording the baseline"
+run record-baseline
 
 # A run-platform looks at itself before it deploys anything, so that it never
 # does so on stale config or secrets. Only CRDs and Namespaces are in by now,

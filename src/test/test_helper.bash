@@ -20,7 +20,7 @@ setup_test_dirs() {
   export TEST_MOCK_BIN
 
   # Create required directory structure under RUN_BASE_PATH
-  # Note: work subdirs (decrypted, manifests, audit, oci-images) are created by scripts
+  # Note: work subdirs (decrypted, manifests, audit, baseline) are created by scripts
   mkdir -p "${TEST_RUN_BASE}/secrets"
   mkdir -p "${TEST_RUN_BASE}/manifests"
   mkdir -p "${TEST_RUN_BASE}/work"
@@ -88,6 +88,24 @@ if [[ "$1" == "create" && -f "${RUN_BASE_PATH}/work/mock-k-cluster/create-fails"
   exit 1
 fi
 
+# get pods -o json: every pod a test has put in the namespace with live_pod,
+# as the list kubectl answers with
+if [[ "$*" == "get pods -o json" ]]; then
+  if [[ -f "${RUN_BASE_PATH}/work/mock-k-cluster/pods-fails" ]]; then
+    echo "Error from server (Forbidden): pods is forbidden" >&2
+    exit 1
+  fi
+  printf '{"apiVersion":"v1","kind":"List","items":['
+  separator=""
+  for pod_file in "${RUN_BASE_PATH}/work/mock-k-cluster/pods"/*; do
+    [[ -f "${pod_file}" ]] || continue
+    printf '%s%s' "${separator}" "$(<"${pod_file}")"
+    separator=","
+  done
+  printf ']}\n'
+  exit 0
+fi
+
 # Return empty for jsonpath queries (oci-images)
 if [[ "$*" == *"-o jsonpath"* ]] || [[ "$*" == *"-o go-template"* ]]; then
   exit 0
@@ -108,8 +126,8 @@ for argument in "$@"; do
 done
 held="${cluster}/${manifest//\//_}"
 
-# get -f <manifest> -o yaml: the live object, or NotFound
-if [[ "$1" == "get" && "$*" == *"-o yaml"* && -n "${manifest}" ]]; then
+# get -f <manifest> -o yaml or -o name: the live object, or NotFound
+if [[ "$1" == "get" && ("$*" == *"-o yaml"* || "$*" == *"-o name"*) && -n "${manifest}" ]]; then
   if [[ -f "${cluster}/get-fails" ]]; then
     echo "Error from server (Forbidden): mocks is forbidden" >&2
     exit 1
@@ -196,8 +214,55 @@ cluster_would_make() {
   cp "${document}" "$(cluster_path "${manifest}").wanted"
 }
 
-# Make one kind of call to the fake cluster fail: get, dry-run, dry-run-invalid,
-# apply or create. Both dry-run kinds are the one that asks for the result
+# Put a pod in the fake cluster's namespace: its name, the one label it carries
+# (key=value, or none), its phase, then the restart count of each of its
+# containers. A count written init:<n> is an init container's. No counts at all
+# is a pod with no container statuses yet. LIVE_POD_DELETING=true in front
+# makes it one that is being deleted.
+live_pod() {
+  local name="$1"
+  local label="$2"
+  local phase="$3"
+  shift 3
+
+  local labels=""
+  if [[ "${label}" != "none" ]]; then
+    labels=",\"labels\":{\"${label%%=*}\":\"${label#*=}\"}"
+  fi
+
+  local deleting=""
+  if [[ "${LIVE_POD_DELETING:-false}" == "true" ]]; then
+    deleting=',"deletionTimestamp":"2026-11-23T00:00:00Z"'
+  fi
+
+  local containers=""
+  local init_containers=""
+  local count
+  for count in "$@"; do
+    if [[ "${count}" == init:* ]]; then
+      init_containers+="${init_containers:+,}{\"name\":\"init\",\"restartCount\":${count#init:}}"
+    else
+      containers+="${containers:+,}{\"name\":\"main\",\"restartCount\":${count}}"
+    fi
+  done
+
+  local statuses=""
+  if [[ -n "${init_containers}" ]]; then
+    statuses+=",\"initContainerStatuses\":[${init_containers}]"
+  fi
+  if [[ -n "${containers}" ]]; then
+    statuses+=",\"containerStatuses\":[${containers}]"
+  fi
+
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster/pods"
+  printf '{"metadata":{"name":"%s"%s%s},"status":{"phase":"%s"%s}}' \
+    "${name}" "${labels}" "${deleting}" "${phase}" "${statuses}" \
+    > "${RUN_BASE_PATH}/work/mock-k-cluster/pods/${name}"
+}
+
+# Make one kind of call to the fake cluster fail: get, pods, dry-run,
+# dry-run-invalid, apply or create. pods is the read of the namespace's pods.
+# Both dry-run kinds are the one that asks for the result
 # (-o yaml): dry-run is refused as a field manager conflict, dry-run-invalid
 # for another reason. install_mock_k_failing_dry_run rejects every dry-run.
 cluster_fails() {
@@ -394,7 +459,7 @@ install_mock_scan_images() {
   cat > "${TEST_MOCK_BIN}/scan-images" << 'MOCK'
 #!/usr/bin/env bash
 label="$1"
-output_dir="${RUN_BASE_PATH}/work/oci-images"
+output_dir="${RUN_BASE_PATH}/work/baseline/oci-images"
 mkdir -p "${output_dir}"
 touch "${output_dir}/oci-images-${label}-unsorted"
 touch "${output_dir}/oci-images-${label}-sorted"

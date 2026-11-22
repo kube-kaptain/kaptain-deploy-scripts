@@ -27,14 +27,14 @@ teardown() {
 @test "scan-images creates output directory" {
   run scan-images "before"
   [ "$status" -eq 0 ]
-  [ -d "${TEST_RUN_BASE}/work/oci-images" ]
+  [ -d "${TEST_RUN_BASE}/work/baseline/oci-images" ]
 }
 
 @test "scan-images creates unsorted and sorted files" {
   run scan-images "before"
   [ "$status" -eq 0 ]
-  [ -f "${TEST_RUN_BASE}/work/oci-images/oci-images-before-unsorted" ]
-  [ -f "${TEST_RUN_BASE}/work/oci-images/oci-images-before-sorted" ]
+  [ -f "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-before-unsorted" ]
+  [ -f "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-before-sorted" ]
 }
 
 @test "scan-images queries multiple workload types" {
@@ -60,9 +60,9 @@ MOCK
 
   run scan-images "test"
   [ "$status" -eq 0 ]
-  grep -q "nginx:1.25" "${TEST_RUN_BASE}/work/oci-images/oci-images-test-sorted"
-  grep -q "redis:7.0" "${TEST_RUN_BASE}/work/oci-images/oci-images-test-sorted"
-  grep -q "busybox:latest" "${TEST_RUN_BASE}/work/oci-images/oci-images-test-sorted"
+  grep -q "nginx:1.25" "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-test-sorted"
+  grep -q "redis:7.0" "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-test-sorted"
+  grep -q "busybox:latest" "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-test-sorted"
 }
 
 @test "scan-images deduplicates images in sorted output" {
@@ -77,16 +77,16 @@ MOCK
   run scan-images "test"
   [ "$status" -eq 0 ]
   local count
-  count=$(grep -c "nginx:1.25" "${TEST_RUN_BASE}/work/oci-images/oci-images-test-sorted")
+  count=$(grep -c "nginx:1.25" "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-test-sorted")
   [ "${count}" -eq 1 ]
 }
 
 # notify-images-changed tests
 
 @test "notify-images-changed reports no changes when files identical" {
-  mkdir -p "${TEST_RUN_BASE}/work/oci-images"
-  echo -e "nginx:1.25\nredis:7.0" > "${TEST_RUN_BASE}/work/oci-images/oci-images-before-sorted"
-  echo -e "nginx:1.25\nredis:7.0" > "${TEST_RUN_BASE}/work/oci-images/oci-images-after-sorted"
+  mkdir -p "${TEST_RUN_BASE}/work/baseline/oci-images"
+  echo -e "nginx:1.25\nredis:7.0" > "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-before-sorted"
+  echo -e "nginx:1.25\nredis:7.0" > "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-after-sorted"
 
   run notify-images-changed
   [ "$status" -eq 0 ]
@@ -95,9 +95,9 @@ MOCK
 }
 
 @test "notify-images-changed reports added images" {
-  mkdir -p "${TEST_RUN_BASE}/work/oci-images"
-  echo -e "nginx:1.25" > "${TEST_RUN_BASE}/work/oci-images/oci-images-before-sorted"
-  echo -e "nginx:1.25\nredis:7.0" > "${TEST_RUN_BASE}/work/oci-images/oci-images-after-sorted"
+  mkdir -p "${TEST_RUN_BASE}/work/baseline/oci-images"
+  echo -e "nginx:1.25" > "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-before-sorted"
+  echo -e "nginx:1.25\nredis:7.0" > "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-after-sorted"
 
   run notify-images-changed
   [ "$status" -eq 0 ]
@@ -106,9 +106,9 @@ MOCK
 }
 
 @test "notify-images-changed reports removed images" {
-  mkdir -p "${TEST_RUN_BASE}/work/oci-images"
-  echo -e "nginx:1.25\nredis:7.0" > "${TEST_RUN_BASE}/work/oci-images/oci-images-before-sorted"
-  echo -e "nginx:1.25" > "${TEST_RUN_BASE}/work/oci-images/oci-images-after-sorted"
+  mkdir -p "${TEST_RUN_BASE}/work/baseline/oci-images"
+  echo -e "nginx:1.25\nredis:7.0" > "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-before-sorted"
+  echo -e "nginx:1.25" > "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-after-sorted"
 
   run notify-images-changed
   [ "$status" -eq 0 ]
@@ -117,9 +117,9 @@ MOCK
 }
 
 @test "notify-images-changed groups by registry" {
-  mkdir -p "${TEST_RUN_BASE}/work/oci-images"
-  echo "" > "${TEST_RUN_BASE}/work/oci-images/oci-images-before-sorted"
-  echo -e "docker.io/library/nginx:1.25\ngcr.io/project/app:v1" > "${TEST_RUN_BASE}/work/oci-images/oci-images-after-sorted"
+  mkdir -p "${TEST_RUN_BASE}/work/baseline/oci-images"
+  echo "" > "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-before-sorted"
+  echo -e "docker.io/library/nginx:1.25\ngcr.io/project/app:v1" > "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-after-sorted"
 
   run notify-images-changed
   [ "$status" -eq 0 ]
@@ -128,9 +128,9 @@ MOCK
 }
 
 @test "notify-images-changed handles bare image names as docker.io" {
-  mkdir -p "${TEST_RUN_BASE}/work/oci-images"
-  echo "" > "${TEST_RUN_BASE}/work/oci-images/oci-images-before-sorted"
-  echo "nginx:latest" > "${TEST_RUN_BASE}/work/oci-images/oci-images-after-sorted"
+  mkdir -p "${TEST_RUN_BASE}/work/baseline/oci-images"
+  echo "" > "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-before-sorted"
+  echo "nginx:latest" > "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-after-sorted"
 
   run notify-images-changed
   [ "$status" -eq 0 ]

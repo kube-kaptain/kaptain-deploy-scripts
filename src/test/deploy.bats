@@ -544,8 +544,45 @@ run_platform_with_a_namespace_only_seed() {
 
 @test "deploy calls scan-images before and after" {
   deploy
-  [ -f "${TEST_RUN_BASE}/work/oci-images/oci-images-before-sorted" ]
-  [ -f "${TEST_RUN_BASE}/work/oci-images/oci-images-after-sorted" ]
+  [ -f "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-before-sorted" ]
+  [ -f "${TEST_RUN_BASE}/work/baseline/oci-images/oci-images-after-sorted" ]
+}
+
+@test "deploy records the baseline after validating and before applying anything" {
+  K_LOG="${TEST_RUN_BASE}/work/k-commands.log"
+  live_pod my-app-7c9d8f5b6-x2k4q app=my-app Running 2
+  run deploy
+  [ "$status" -eq 0 ]
+  [ "$(<"${TEST_RUN_BASE}/work/baseline/all")" = "Deployment|my-app|deployment.yaml" ]
+  [ "$(<"${TEST_RUN_BASE}/work/baseline/restart-counts")" = "my-app-7c9d8f5b6-x2k4q|2" ]
+  local validated recorded applied
+  validated=$(line_of "--dry-run=server")
+  recorded=$(line_of "get pods -o json")
+  applied=$(line_of "-R -f ${TEST_RUN_BASE}/work/stages/deploy")
+  [ "${validated}" -lt "${recorded}" ]
+  [ "${recorded}" -lt "${applied}" ]
+}
+
+@test "deploy on a run-platform records the baseline before it reapplies its own set" {
+  run_platform_with_one_seed
+  run deploy
+  [ "$status" -eq 0 ]
+  [ -f "${TEST_RUN_BASE}/work/baseline/restart-counts" ]
+  local recorded own
+  recorded=$(line_of "get pods -o json")
+  own=$(line_of "-R -f ${SELF_SET}")
+  [ "${recorded}" -lt "${own}" ]
+}
+
+@test "deploy fails and applies nothing when the baseline cannot be recorded" {
+  K_LOG="${TEST_RUN_BASE}/work/k-commands.log"
+  cluster_fails pods
+  run deploy
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Could not read the pods in run-test-env to record their restart counts"* ]]
+  [[ "$output" == *"Recording the baseline"* ]]
+  run grep -- "-R -f" "${K_LOG}"
+  [ "$status" -eq 1 ]
 }
 
 @test "deploy outputs elapsed time" {

@@ -62,6 +62,7 @@ check_binary date
 check_binary sleep
 check_binary ps
 check_binary printf
+check_binary sha256sum
 
 echo ""
 echo "Bash version:"

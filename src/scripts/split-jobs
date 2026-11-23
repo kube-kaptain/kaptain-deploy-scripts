@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Second part of the split: take the Jobs that run before the deploy and the
+# Jobs that run after it out of the deploy stage, into stages of their own.
+#
+# A Job is one or the other by its file name, wherever it sits in the deploy
+# stage. Each keeps the path and file name it has there.
+#
+#   work/stages/prerequisite   prerequisite-job*.yaml, and what those Jobs need
+#   work/stages/postdeploy     postdeploy-job*.yaml, and nothing else
+#
+# A prerequisite Job runs before anything else is applied, so what it needs to
+# run has to go in with it, and only that. It is found by following the Job's
+# pod template:
+#
+#   - its ServiceAccount, with every RoleBinding naming that account and the
+#     Role each of those points to
+#   - the ConfigMaps and Secrets it mounts, or reads through env and envFrom
+#   - its image pull secrets
+#   - its PersistentVolumeClaims
+#
+# Each is looked for in the deploy stage by kind and name and moved across. One
+# that is not there is logged and left: it may well be in the cluster already.
+#
+# A postdeploy Job runs after everything else is in, so it takes nothing with
+# it.
+#
+# Only the deploy stage is searched. A run-platform's own set and its seeded
+# children are deployer sets, with no business holding either kind of Job.
+#
+# Runs once per container, after split-manifests. If either stage is already
+# there it refuses.
+set -euo pipefail
+
+base="${RUN_BASE_PATH:-/kd}"
+stages_dir="${base}/work/stages"
+deploy_dir="${stages_dir}/deploy"
+prerequisite_dir="${stages_dir}/prerequisite"
+postdeploy_dir="${stages_dir}/postdeploy"
+
+# One line for each manifest in the deploy stage, to look things up in:
+# <file>|<kind>|<name>|<roleRef kind>|<roleRef name>|<its ServiceAccount subjects, comma separated>
+# shellcheck disable=SC2016 # A yq expression, not shell
+INDEX='[filename, .kind // "", .metadata.name // "", .roleRef.kind // "", .roleRef.name // "", ([.subjects[] | select(.kind == "ServiceAccount") | .name] | join(","))] | join("|")'
+
+# What a Job's pod template refers to by name, as <kind>|<name> lines
+# shellcheck disable=SC2016 # A yq expression, not shell
+NEEDS='
+  .spec.template.spec | (
+    (.serviceAccountName | select(. != null) | "ServiceAccount|" + .),
+    (.imagePullSecrets[].name | select(. != null) | "Secret|" + .),
+    (.volumes[].configMap.name | select(. != null) | "ConfigMap|" + .),
+    (.volumes[].secret.secretName | select(. != null) | "Secret|" + .),
+    (.volumes[].persistentVolumeClaim.claimName | select(. != null) | "PersistentVolumeClaim|" + .),
+    (.volumes[].projected.sources[].configMap.name | select(. != null) | "ConfigMap|" + .),
+    (.volumes[].projected.sources[].secret.name | select(. != null) | "Secret|" + .),
+    ((.containers[], .initContainers[]) | .env[].valueFrom.configMapKeyRef.name | select(. != null) | "ConfigMap|" + .),
+    ((.containers[], .initContainers[]) | .env[].valueFrom.secretKeyRef.name | select(. != null) | "Secret|" + .),
+    ((.containers[], .initContainers[]) | .envFrom[].configMapRef.name | select(. != null) | "ConfigMap|" + .),
+    ((.containers[], .initContainers[]) | .envFrom[].secretRef.name | select(. != null) | "Secret|" + .)
+  )
+'
+
+if [[ ! -d "${deploy_dir}" ]]; then
+  notify-error "The deploy stage does not exist, split-manifests has to run first: ${deploy_dir}"
+  exit 1
+fi
+
+for written_dir in "${prerequisite_dir}" "${postdeploy_dir}"; do
+  if [[ -e "${written_dir}" ]]; then
+    notify-error "The job stages have already been split in this container, refusing to do it again: ${written_dir} exists"
+    exit 1
+  fi
+done
+
+shopt -s globstar nullglob
+manifests=("${deploy_dir}"/**/*.yaml)
+shopt -u globstar nullglob
+
+if [[ ${#manifests[@]} -eq 0 ]]; then
+  log "No manifests in the deploy stage, so no prerequisite or postdeploy jobs"
+  exit 0
+fi
+
+if ! index=$(yq -N "${INDEX}" "${manifests[@]}"); then
+  notify-error "Could not read the manifests in the deploy stage to find its prerequisite and postdeploy jobs"
+  exit 1
+fi
+
+# Move a manifest from the deploy stage to the same path in another stage
+move_to_stage() {
+  local manifest="$1"
+  local stage_dir="$2"
+  local moved="${stage_dir}/${manifest#"${deploy_dir}/"}"
+  mkdir -p "$(dirname "${moved}")"
+  mv "${manifest}" "${moved}"
+}
+
+# Move what a prerequisite Job needs across with it, if it is in the deploy
+# stage. Already moved for an earlier Job is fine; not there at all is logged.
+take_with() {
+  local kind="$1"
+  local name="$2"
+  local needed
+  needed=$(awk -F'|' -v kind="${kind}" -v name="${name}" '$2 == kind && $3 == name { print $1 }' <<< "${index}")
+
+  if [[ -z "${needed}" ]]; then
+    log "  ${kind} ${name} is not in the manifests, expecting it to be in the cluster already"
+    return 0
+  fi
+
+  local manifest
+  while IFS= read -r manifest; do
+    [[ -f "${manifest}" ]] || continue
+    move_to_stage "${manifest}" "${prerequisite_dir}"
+    needs=$((needs + 1))
+    log "  with ${kind} ${name}: ${manifest#"${deploy_dir}/"}"
+  done <<< "${needed}"
+}
+
+prerequisites=0
+postdeploys=0
+needs=0
+for manifest in "${manifests[@]}"; do
+  case "$(basename "${manifest}")" in
+    prerequisite-job*.yaml) stage="prerequisite" ;;
+    postdeploy-job*.yaml) stage="postdeploy" ;;
+    *) continue ;;
+  esac
+  relative="${manifest#"${deploy_dir}/"}"
+
+  # The name says it is a Job, and it is treated as one from here on
+  kind=$(awk -F'|' -v file="${manifest}" '$1 == file { print $2 }' <<< "${index}")
+  if [[ "${kind}" != "Job" ]]; then
+    notify-error "Named as a ${stage} job but it is not a Job (${kind:-no kind}): ${relative}"
+    exit 51
+  fi
+
+  if [[ "${stage}" == "postdeploy" ]]; then
+    move_to_stage "${manifest}" "${postdeploy_dir}"
+    postdeploys=$((postdeploys + 1))
+    log "Postdeploy job: ${relative}"
+    continue
+  fi
+
+  if ! job_needs=$(yq -N "${NEEDS}" "${manifest}"); then
+    notify-error "Could not read what the prerequisite job needs: ${relative}"
+    exit 1
+  fi
+
+  move_to_stage "${manifest}" "${prerequisite_dir}"
+  prerequisites=$((prerequisites + 1))
+  log "Prerequisite job: ${relative}"
+
+  while IFS='|' read -r need_kind need_name; do
+    [[ -n "${need_kind}" && -n "${need_name}" ]] || continue
+    take_with "${need_kind}" "${need_name}"
+
+    # Its account is no use without what the account is allowed to do
+    if [[ "${need_kind}" == "ServiceAccount" ]]; then
+      bindings=$(awk -F'|' -v account="${need_name}" '$2 == "RoleBinding" && index("," $6 ",", "," account ",") { print $3 "|" $4 "|" $5 }' <<< "${index}")
+      while IFS='|' read -r binding role_kind role_name; do
+        [[ -n "${binding}" ]] || continue
+        take_with "RoleBinding" "${binding}"
+        take_with "${role_kind}" "${role_name}"
+      done <<< "${bindings}"
+    fi
+  done <<< "$(LC_ALL=C sort -u <<< "${job_needs}")"
+done
+
+log "Job stages: ${prerequisites} prerequisite job(s) with ${needs} of what they need, ${postdeploys} postdeploy job(s)"

@@ -21,27 +21,6 @@ teardown() {
   teardown_test_dirs
 }
 
-# A date that answers the one question notify-once asks of it, seconds since
-# the epoch, with whatever a test last said the time is. Anything else goes to
-# the real date.
-install_mock_clock() {
-  local real_date
-  real_date="$(command -v date)"
-  cat > "${TEST_MOCK_BIN}/date" << MOCK
-#!/usr/bin/env bash
-if [[ "\$*" == "-u +%s" && -f "\${RUN_BASE_PATH}/work/mock-clock" ]]; then
-  cat "\${RUN_BASE_PATH}/work/mock-clock"
-  exit 0
-fi
-exec "${real_date}" "\$@"
-MOCK
-  chmod +x "${TEST_MOCK_BIN}/date"
-}
-
-clock_reads() {
-  echo "$1" > "${TEST_RUN_BASE}/work/mock-clock"
-}
-
 checksum_of() {
   local checksum
   checksum=$(printf '%s' "$1" | sha256sum)

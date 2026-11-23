@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Apply one of the two job stages, then wait for its Jobs to finish.
+#
+#   apply-jobs prerequisite   before anything else is applied. The stage holds
+#                             the Jobs and what they need, all applied at once.
+#   apply-jobs postdeploy     after everything else is in.
+#
+# Every Job in the stage is applied. Which of them are then waited for:
+#
+#   - Only a Job this deploy brought: one in the baseline's new-jobs. A Job the
+#     cluster already had before this deploy is not this deploy's to care
+#     about, whatever became of it. Applying it again changes nothing and it
+#     does not run again.
+#   - Not a suspended Job (spec.suspend: true). It would never finish.
+#   - Not a postdeploy Job annotated kaptain.org/post-deploy-job-wait: "false".
+#     The default is to wait.
+#
+# All the Jobs waited for are waited for together. Each round asks about every
+# one still running, then pauses. The pause starts at JOB_WAIT_POLL seconds and
+# doubles every JOB_WAIT_POLL_DOUBLE_AFTER seconds, JOB_WAIT_POLL_DOUBLES times:
+# 5s for the first minute, then 10s, 20s, and 40s from there on. Each round:
+#
+#   - Complete: done.
+#   - Failed: the deploy fails at once, with the reason and message the Job
+#     gives. Exit 61.
+#   - Gone from the cluster: deleted by hand or by its own
+#     ttlSecondsAfterFinished. How it ended cannot be known, so it is said and
+#     no longer waited for.
+#   - Anything else: still running, or retrying, or unable to start. A Job
+#     whose pod cannot be scheduled or cannot pull its image never fails by
+#     itself, so the whole wait is bounded by JOB_WAIT_TIMEOUT. Exit 62.
+#
+# What it is waiting for goes through notify-once, so a wait that lasts many
+# rounds says so in the chat thread once.
+set -euo pipefail
+
+if [[ $# -ne 1 ]] || [[ "$1" != "prerequisite" && "$1" != "postdeploy" ]]; then
+  echo "Usage: apply-jobs <prerequisite|postdeploy>" >&2
+  exit 42
+fi
+
+stage="$1"
+
+base="${RUN_BASE_PATH:-/kd}"
+stage_dir="${base}/work/stages/${stage}"
+new_jobs="${base}/work/baseline/new-jobs"
+audit_dir="${base}/work/audit"
+apply_log="${audit_dir}/apply-${stage}.log"
+purpose="${stage}-jobs"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=src/scripts/lib/poll.bash
+source "${SCRIPT_DIR}/lib/poll.bash"
+
+# How long to wait for all the Jobs to finish, in seconds
+wait_timeout="${JOB_WAIT_TIMEOUT:-600}"
+# The pause between rounds of asking: the fastest it gets, in seconds, how long
+# before it doubles, and how many times it does
+wait_poll="${JOB_WAIT_POLL:-5}"
+wait_poll_double_after="${JOB_WAIT_POLL_DOUBLE_AFTER:-60}"
+wait_poll_doubles="${JOB_WAIT_POLL_DOUBLES:-3}"
+
+# One line for each manifest in the stage:
+# <file>|<kind>|<name>|<suspended>|<wait annotation, true unless it says otherwise>
+# shellcheck disable=SC2016 # A yq expression, not shell
+JOBS='[filename, .kind // "", .metadata.name // "", .spec.suspend // false, .metadata.annotations["kaptain.org/post-deploy-job-wait"] // "true"] | join("|")'
+
+# The condition that says a Job has ended, Complete or Failed, if it has one
+# shellcheck disable=SC2016 # A yq expression, not shell
+ENDED='[.status.conditions[] | select(.status == "True" and (.type == "Complete" or .type == "Failed")) | .type] | .[0] // ""'
+
+# Why a failed Job failed, in the Job's own words
+# shellcheck disable=SC2016 # A yq expression, not shell
+FAILURE='[.status.conditions[] | select(.status == "True" and .type == "Failed") | (.reason // "no reason given") + ": " + (.message // "no message given")] | .[0] // ""'
+
+shopt -s globstar nullglob
+manifests=("${stage_dir}"/**/*.yaml)
+shopt -u globstar nullglob
+
+if [[ ${#manifests[@]} -eq 0 ]]; then
+  log "No ${stage} jobs"
+  exit 0
+fi
+
+if [[ ! -f "${new_jobs}" ]]; then
+  notify-error "No baseline to tell which ${stage} jobs are new, record-baseline has to run first: ${new_jobs}"
+  exit 1
+fi
+
+mkdir -p "${audit_dir}"
+
+if ! stage_jobs=$(yq -N "${JOBS}" "${manifests[@]}"); then
+  notify-error "Could not read the ${stage} jobs"
+  exit 1
+fi
+
+if ! apply "${stage_dir}" > "${apply_log}" 2>&1; then
+  notify-error "Applying the ${stage} jobs failed - inspect ${apply_log}"
+  exit 1
+fi
+
+# The Jobs to wait for, each as <name>|<file within the stage>
+waiting=()
+while IFS='|' read -r manifest kind name suspended wait_for; do
+  [[ "${kind}" == "Job" ]] || continue
+  relative="${manifest#"${stage_dir}/"}"
+
+  if ! grep -qxF -- "Job|${name}|${relative}" "${new_jobs}"; then
+    log "Job ${name} was in the cluster before this deploy, not waiting for it"
+  elif [[ "${suspended}" == "true" ]]; then
+    log "Job ${name} is suspended, not waiting for it"
+  elif [[ "${stage}" == "postdeploy" && "${wait_for}" == "false" ]]; then
+    log "Job ${name} is annotated kaptain.org/post-deploy-job-wait: \"false\", not waiting for it"
+  else
+    waiting+=("${name}|${relative}")
+  fi
+done <<< "${stage_jobs}"
+
+if [[ ${#waiting[@]} -eq 0 ]]; then
+  log "Applied the ${stage} jobs, none to wait for"
+  exit 0
+fi
+
+waited_for=${#waiting[@]}
+error_file="$(mktemp)"
+started=$(date -u '+%s')
+deadline=$(( started + wait_timeout ))
+while true; do
+  still_waiting=()
+  names=""
+  for entry in "${waiting[@]}"; do
+    name="${entry%%|*}"
+    relative="${entry#*|}"
+
+    if ! live=$(k get -f "${stage_dir}/${relative}" -o yaml 2> "${error_file}"); then
+      if grep -q "(NotFound)" "${error_file}"; then
+        notify-once "${purpose}" "Job ${name} is gone from the cluster, deleted or cleaned up by its ttlSecondsAfterFinished, so how it ended cannot be told. No longer waiting for it."
+        continue
+      fi
+      notify-once "${purpose}" "Could not ask the cluster about ${stage} job ${name}"
+      notify-error "Could not ask the cluster about ${stage} job ${name}: $(<"${error_file}")"
+      rm -f "${error_file}"
+      exit 1
+    fi
+
+    ended=$(yq "${ENDED}" <<< "${live}")
+    if [[ "${ended}" == "Complete" ]]; then
+      continue
+    fi
+    if [[ "${ended}" == "Failed" ]]; then
+      notify-once "${purpose}" "The ${stage} job ${name} failed"
+      # shellcheck disable=SC2154 # ENVIRONMENT set by final environment image build, validated by validate-environment
+      notify-error "The ${stage} job ${name} failed
+  $(yq "${FAILURE}" <<< "${live}")
+To see why:
+  kubectl -n ${ENVIRONMENT} describe job ${name}
+  kubectl -n ${ENVIRONMENT} logs job/${name}"
+      rm -f "${error_file}"
+      exit 61
+    fi
+
+    still_waiting+=("${entry}")
+    names+="${names:+, }${name}"
+  done
+
+  if [[ ${#still_waiting[@]} -eq 0 ]]; then
+    break
+  fi
+  waiting=("${still_waiting[@]}")
+
+  now=$(date -u '+%s')
+  if [[ ${now} -ge ${deadline} ]]; then
+    notify-once "${purpose}" "Gave up waiting for the ${stage} jobs after ${wait_timeout}s"
+    notify-error "The ${stage} jobs did not all finish within ${wait_timeout}s, still running: ${names}
+A Job whose pod cannot be scheduled or cannot pull its image never fails by itself. To see what each is doing:
+  kubectl -n ${ENVIRONMENT} describe job <name>"
+    rm -f "${error_file}"
+    exit 62
+  fi
+
+  notify-once "${purpose}" "Waiting for ${#waiting[@]} ${stage} job(s): ${names}"
+
+  # Never past the end of the wait, so giving up comes on time
+  pause=$(poll_period "$(( now - started ))" "${wait_poll}" "${wait_poll_double_after}" "${wait_poll_doubles}")
+  if [[ ${pause} -gt $(( deadline - now )) ]]; then
+    pause=$(( deadline - now ))
+  fi
+  sleep "${pause}"
+done
+rm -f "${error_file}"
+
+notify-once "${purpose}" "The ${stage} jobs have finished: ${waited_for} waited for"

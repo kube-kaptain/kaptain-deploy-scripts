@@ -132,8 +132,23 @@ if [[ "$1" == "get" && ("$*" == *"-o yaml"* || "$*" == *"-o name"*) && -n "${man
     echo "Error from server (Forbidden): mocks is forbidden" >&2
     exit 1
   fi
+  # A Job a test has said disappears once applied
+  if [[ -f "${held}" && -f "${held}.gone" ]]; then
+    echo "Error from server (NotFound): jobs.batch \"$(basename "${manifest}")\" not found" >&2
+    exit 1
+  fi
   if [[ -f "${held}" ]]; then
     cat "${held}"
+    # A Job a test has given an ending with job_ends: its status, once it has
+    # been asked about as many times as the test said it takes
+    if [[ -f "${held}.status" ]]; then
+      rounds_left=$(<"${held}.status-rounds")
+      if [[ "${rounds_left}" -gt 0 ]]; then
+        echo "$((rounds_left - 1))" > "${held}.status-rounds"
+      else
+        cat "${held}.status"
+      fi
+    fi
     exit 0
   fi
   echo "Error from server (NotFound): mocks \"$(basename "${manifest}")\" not found" >&2
@@ -270,6 +285,36 @@ cluster_fails() {
   touch "${RUN_BASE_PATH}/work/mock-k-cluster/$1-fails"
 }
 
+# Give a Job an ending, for once its manifest has been applied: Complete or
+# Failed, after it has been asked about that many times and found still
+# running (none unless said). A Failed one says BackoffLimitExceeded.
+job_ends() {
+  local manifest="$1"
+  local ending="$2"
+  local rounds="${3:-0}"
+  local held
+  held="$(cluster_path "${manifest}")"
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  echo "${rounds}" > "${held}.status-rounds"
+  {
+    echo "status:"
+    echo "  conditions:"
+    echo "    - type: ${ending}"
+    echo "      status: \"True\""
+    if [[ "${ending}" == "Failed" ]]; then
+      echo "      reason: BackoffLimitExceeded"
+      echo "      message: Job has reached the specified backoff limit"
+    fi
+  } > "${held}.status"
+}
+
+# Make a Job disappear once applied, as its ttlSecondsAfterFinished would
+job_vanishes() {
+  local manifest="$1"
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  touch "$(cluster_path "${manifest}").gone"
+}
+
 # Make a CRD answer "not Established yet" for that many rounds of asking
 crd_established_after() {
   local name="$1"
@@ -401,6 +446,38 @@ if [[ "\${int}" -ge 2 ]] 2>/dev/null; then
   exit 0
 fi
 exec "${real_sleep}" "\$@"
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/sleep"
+}
+
+# A date that answers "seconds since the epoch" (date -u +%s) with whatever a
+# test last said the time is. Anything else goes to the real date.
+install_mock_clock() {
+  local real_date
+  real_date="$(command -v date)"
+  cat > "${TEST_MOCK_BIN}/date" << MOCK
+#!/usr/bin/env bash
+if [[ "\$*" == "-u +%s" && -f "\${RUN_BASE_PATH}/work/mock-clock" ]]; then
+  cat "\${RUN_BASE_PATH}/work/mock-clock"
+  exit 0
+fi
+exec "${real_date}" "\$@"
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/date"
+}
+
+clock_reads() {
+  echo "$1" > "${RUN_BASE_PATH}/work/mock-clock"
+}
+
+# A sleep that takes no time at all, writes down how long it was asked for in
+# work/sleeps.log, and moves the mock clock on by that much. Needs
+# install_mock_clock and a clock_reads first.
+install_mock_sleep_that_moves_the_clock() {
+  cat > "${TEST_MOCK_BIN}/sleep" << 'MOCK'
+#!/usr/bin/env bash
+echo "$1" >> "${RUN_BASE_PATH}/work/sleeps.log"
+echo "$(( $(<"${RUN_BASE_PATH}/work/mock-clock") + $1 ))" > "${RUN_BASE_PATH}/work/mock-clock"
 MOCK
   chmod +x "${TEST_MOCK_BIN}/sleep"
 }

@@ -238,6 +238,11 @@ if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
   run validate-on-behalf
 fi
 
+# The second part of the split, left until the tree is known to be sound: the
+# Jobs that run before the deploy, with what they need, and the Jobs that run
+# after it each leave the deploy stage for a stage of their own.
+run split-jobs
+
 # What the deploy starts from: the workloads declared, the restart count of
 # each of their pods, which declared Jobs the cluster does not have yet, and
 # the images in use (the "before" list the scan after the deploy is compared
@@ -283,6 +288,10 @@ if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
 fi
 
 change_phase true "Applying manifests"
+# Before anything else: the prerequisite Jobs and what they need, applied
+# together and waited for. One that fails stops the deploy with nothing else
+# changed.
+run apply-jobs prerequisite
 # On a run-platform, what its children need of it goes in first, before any
 # child's deployer: each child's role binding in its own namespace, then the
 # cluster-scoped resources each child has delegated
@@ -296,6 +305,9 @@ run apply-manifests
 if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
   run reapply-seeds-if-changed
 fi
+# After everything else is in: the postdeploy Jobs, waited for unless they
+# say not to. One that fails fails the deploy, with the rest of it live.
+run apply-jobs postdeploy
 # TODO apply in a more sophisticated way
 # TODO verify things are happy after this action - await happiness - but don't accept increasing restarts on anything declared
 # TODO clean up stuff we don't have declared - leave the environment exactly as declared

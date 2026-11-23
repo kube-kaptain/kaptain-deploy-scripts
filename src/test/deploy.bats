@@ -585,6 +585,87 @@ run_platform_with_a_namespace_only_seed() {
   [ "$status" -eq 1 ]
 }
 
+# Prerequisite and postdeploy jobs
+#
+# A Job among the fixtures, named so that it runs before the deploy or after
+# it. The first can be given a ConfigMap to need.
+job_among_the_fixtures() {
+  local file="${TEST_RUN_BASE}/manifests/$1"
+  local config="${2:-}"
+  printf 'apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: %s\nspec:\n  template:\n    spec:\n      containers:\n        - name: main\n          image: example.org/thing:1.0.0\n' \
+    "$(basename "$1" .yaml)" > "${file}"
+  if [[ -n "${config}" ]]; then
+    printf '          envFrom:\n            - configMapRef:\n                name: %s\n' "${config}" >> "${file}"
+    printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n' "${config}" \
+      > "${TEST_RUN_BASE}/manifests/configmap-${config}.yaml"
+  fi
+}
+
+@test "deploy runs prerequisite jobs with what they need first, then the rest, then postdeploy jobs" {
+  K_LOG="${TEST_RUN_BASE}/work/k-commands.log"
+  local stages="${TEST_RUN_BASE}/work/stages"
+  job_among_the_fixtures prerequisite-job-migrate.yaml migrate-config
+  job_among_the_fixtures postdeploy-job-announce.yaml
+  job_ends "${stages}/prerequisite/prerequisite-job-migrate.yaml" Complete
+  job_ends "${stages}/postdeploy/postdeploy-job-announce.yaml" Complete
+  run deploy
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Deployment complete"* ]]
+  [ -f "${stages}/prerequisite/prerequisite-job-migrate.yaml" ]
+  [ -f "${stages}/prerequisite/configmap-migrate-config.yaml" ]
+  [ -f "${stages}/postdeploy/postdeploy-job-announce.yaml" ]
+  [ -f "${stages}/deploy/deployment.yaml" ]
+  [ ! -e "${stages}/deploy/prerequisite-job-migrate.yaml" ]
+  [ ! -e "${stages}/deploy/configmap-migrate-config.yaml" ]
+  [ ! -e "${stages}/deploy/postdeploy-job-announce.yaml" ]
+  local before rest after
+  before=$(line_of "-R -f ${stages}/prerequisite")
+  rest=$(line_of "-R -f ${stages}/deploy")
+  after=$(line_of "-R -f ${stages}/postdeploy")
+  [ "${before}" -lt "${rest}" ]
+  [ "${rest}" -lt "${after}" ]
+  [[ "$output" == *"The prerequisite jobs have finished: 1 waited for"* ]]
+  [[ "$output" == *"The postdeploy jobs have finished: 1 waited for"* ]]
+}
+
+@test "deploy stops with nothing else applied when a prerequisite job fails" {
+  K_LOG="${TEST_RUN_BASE}/work/k-commands.log"
+  local stages="${TEST_RUN_BASE}/work/stages"
+  job_among_the_fixtures prerequisite-job-migrate.yaml
+  job_ends "${stages}/prerequisite/prerequisite-job-migrate.yaml" Failed
+  run deploy
+  [ "$status" -eq 61 ]
+  [[ "$output" == *"The prerequisite job prerequisite-job-migrate failed"* ]]
+  [[ "$output" != *"Deployment complete"* ]]
+  run grep -- "-R -f ${stages}/deploy" "${K_LOG}"
+  [ "$status" -eq 1 ]
+}
+
+@test "deploy fails on a failed postdeploy job, with everything else already applied" {
+  K_LOG="${TEST_RUN_BASE}/work/k-commands.log"
+  local stages="${TEST_RUN_BASE}/work/stages"
+  job_among_the_fixtures postdeploy-job-announce.yaml
+  job_ends "${stages}/postdeploy/postdeploy-job-announce.yaml" Failed
+  run deploy
+  [ "$status" -eq 61 ]
+  [[ "$output" == *"The postdeploy job postdeploy-job-announce failed"* ]]
+  [[ "$output" != *"Deployment complete"* ]]
+  grep -q -- "-R -f ${stages}/deploy" "${K_LOG}"
+}
+
+@test "deploy does not wait for a job that was in the cluster before it ran" {
+  K_LOG="${TEST_RUN_BASE}/work/k-commands.log"
+  local stages="${TEST_RUN_BASE}/work/stages"
+  job_among_the_fixtures prerequisite-job-migrate.yaml
+  cluster_holds "${TEST_RUN_BASE}/work/manifests/prerequisite-job-migrate.yaml" "${TEST_RUN_BASE}/manifests/prerequisite-job-migrate.yaml"
+  job_ends "${stages}/prerequisite/prerequisite-job-migrate.yaml" Failed
+  run deploy
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Deployment complete"* ]]
+  run grep -- "^get -f ${stages}/prerequisite" "${K_LOG}"
+  [ "$status" -eq 1 ]
+}
+
 @test "deploy outputs elapsed time" {
   run deploy
   [[ "$output" == *"seconds"* ]]

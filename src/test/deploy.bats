@@ -12,6 +12,7 @@ setup() {
   install_mock_validate_container
   install_mock_scan_images
   install_mock_notify_images_changed
+  install_mock_monitor_environment
   copy_fixture_manifests
   copy_fixture_templates
   copy_fixture_secrets
@@ -664,6 +665,65 @@ job_among_the_fixtures() {
   [[ "$output" == *"Deployment complete"* ]]
   run grep -- "^get -f ${stages}/prerequisite" "${K_LOG}"
   [ "$status" -eq 1 ]
+}
+
+# The stability check
+
+@test "deploy checks the environment is stable after everything is applied and before the postdeploy jobs" {
+  K_LOG="${TEST_RUN_BASE}/work/k-commands.log"
+  local stages="${TEST_RUN_BASE}/work/stages"
+  job_among_the_fixtures postdeploy-job-announce.yaml
+  job_ends "${stages}/postdeploy/postdeploy-job-announce.yaml" Complete
+  run deploy
+  [ "$status" -eq 0 ]
+  local applied checked after
+  applied=$(line_of "-R -f ${stages}/deploy")
+  checked=$(line_of "^monitor-environment$")
+  after=$(line_of "-R -f ${stages}/postdeploy")
+  [ "${applied}" -lt "${checked}" ]
+  [ "${checked}" -lt "${after}" ]
+}
+
+@test "deploy runs the real stability check against what it declared and recorded" {
+  K_LOG="${TEST_RUN_BASE}/work/k-commands.log"
+  export MONITOR_ENVIRONMENT_SETTLE=0
+  rm "${TEST_MOCK_BIN}/monitor-environment"
+  mkdir -p "${TEST_RUN_BASE}/work/mock-k-cluster/snapshot/1"
+  printf '{"kind":"Deployment","metadata":{"name":"my-app","generation":1},"spec":{"replicas":2},"status":{"observedGeneration":1,"updatedReplicas":2,"replicas":2,"readyReplicas":2}}' \
+    > "${TEST_RUN_BASE}/work/mock-k-cluster/snapshot/1/Deployment-my-app"
+  run deploy
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Starting stability check for 'run-test-env' with timeout of 600 seconds"* ]]
+  [[ "$output" == *"Environment declared stable!"* ]]
+  [[ "$output" == *"Deployment complete"* ]]
+}
+
+@test "deploy fails, and runs no postdeploy jobs, when the environment has something that cannot get better" {
+  K_LOG="${TEST_RUN_BASE}/work/k-commands.log"
+  install_mock_monitor_environment 63
+  job_among_the_fixtures postdeploy-job-announce.yaml
+  run deploy
+  [ "$status" -eq 63 ]
+  [[ "$output" != *"Unexpected issue"* ]]
+  [[ "$output" != *"Deployment complete"* ]]
+  run grep -- "-R -f ${TEST_RUN_BASE}/work/stages/postdeploy" "${K_LOG}"
+  [ "$status" -eq 1 ]
+}
+
+@test "deploy fails when the environment is not stable in time" {
+  install_mock_monitor_environment 64
+  run deploy
+  [ "$status" -eq 64 ]
+  [[ "$output" != *"Unexpected issue"* ]]
+  [[ "$output" != *"Deployment complete"* ]]
+}
+
+@test "deploy says the stability check itself went wrong when it exits with any other code" {
+  install_mock_monitor_environment 2
+  run deploy
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"Unexpected issue in 'monitor-environment', please report upstream."* ]]
+  [[ "$output" != *"Deployment complete"* ]]
 }
 
 @test "deploy outputs elapsed time" {

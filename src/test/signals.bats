@@ -16,6 +16,7 @@ setup() {
   install_mock_validate_container
   install_mock_scan_images
   install_mock_notify_images_changed
+  install_mock_monitor_environment
   copy_fixture_manifests
   copy_fixture_secrets
   # deploy runs the real validate-environment, which requires this ConfigMap

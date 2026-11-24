@@ -106,6 +106,80 @@ if [[ "$*" == "get pods -o json" ]]; then
   exit 0
 fi
 
+# get deployments,statefulsets,daemonsets,jobs,pods -o json: what
+# monitor-environment asks each round. A test describes the cluster as it is
+# from some round on by putting one JSON object per file in a dir named for
+# that round, mock-k-cluster/snapshot/<round>. Each ask gets the latest round
+# described that is not after it. Nothing described is an empty namespace.
+#
+# get replicasets -o json: the ReplicaSet-* files of that same round, which it
+# asks for only when a Deployment is part way through a rollout.
+#
+# A test makes the first sort of ask fail with a snapshot-fails file: every
+# time if it is empty, or for as many asks as the number in it.
+if [[ "$*" == "get replicasets -o json" ]]; then
+  snapshots="${RUN_BASE_PATH}/work/mock-k-cluster/snapshot"
+  asked=0
+  if [[ -f "${RUN_BASE_PATH}/work/mock-k-cluster/snapshots-asked" ]]; then
+    asked=$(<"${RUN_BASE_PATH}/work/mock-k-cluster/snapshots-asked")
+  fi
+  latest=0
+  for round_dir in "${snapshots}"/*; do
+    [[ -d "${round_dir}" ]] || continue
+    round="$(basename "${round_dir}")"
+    if [[ "${round}" -le "${asked}" && "${round}" -gt "${latest}" ]]; then
+      latest="${round}"
+    fi
+  done
+  printf '{"apiVersion":"v1","kind":"List","items":['
+  separator=""
+  for seen_file in "${snapshots}/${latest}"/ReplicaSet-*; do
+    [[ -f "${seen_file}" ]] || continue
+    printf '%s%s' "${separator}" "$(<"${seen_file}")"
+    separator=","
+  done
+  printf ']}\n'
+  exit 0
+fi
+
+if [[ "$*" == "get deployments,statefulsets,daemonsets,jobs,pods -o json" ]]; then
+  snapshots="${RUN_BASE_PATH}/work/mock-k-cluster/snapshot"
+  asked=1
+  if [[ -f "${RUN_BASE_PATH}/work/mock-k-cluster/snapshots-asked" ]]; then
+    asked=$(( $(<"${RUN_BASE_PATH}/work/mock-k-cluster/snapshots-asked") + 1 ))
+  fi
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  echo "${asked}" > "${RUN_BASE_PATH}/work/mock-k-cluster/snapshots-asked"
+  fails_file="${RUN_BASE_PATH}/work/mock-k-cluster/snapshot-fails"
+  if [[ -f "${fails_file}" ]]; then
+    fails_left=$(<"${fails_file}")
+    if [[ -z "${fails_left}" || "${fails_left}" -gt 0 ]]; then
+      if [[ -n "${fails_left}" ]]; then
+        echo "$((fails_left - 1))" > "${fails_file}"
+      fi
+      echo "Error from server (Forbidden): deployments.apps is forbidden" >&2
+      exit 1
+    fi
+  fi
+  latest=0
+  for round_dir in "${snapshots}"/*; do
+    [[ -d "${round_dir}" ]] || continue
+    round="$(basename "${round_dir}")"
+    if [[ "${round}" -le "${asked}" && "${round}" -gt "${latest}" ]]; then
+      latest="${round}"
+    fi
+  done
+  printf '{"apiVersion":"v1","kind":"List","items":['
+  separator=""
+  for seen_file in "${snapshots}/${latest}"/*; do
+    [[ -f "${seen_file}" ]] || continue
+    printf '%s%s' "${separator}" "$(<"${seen_file}")"
+    separator=","
+  done
+  printf ']}\n'
+  exit 0
+fi
+
 # Return empty for jsonpath queries (oci-images)
 if [[ "$*" == *"-o jsonpath"* ]] || [[ "$*" == *"-o go-template"* ]]; then
   exit 0
@@ -231,7 +305,7 @@ cluster_would_make() {
 
 # Put a pod in the fake cluster's namespace: its name, the one label it carries
 # (key=value, or none), its phase, then the restart count of each of its
-# containers. A count written init:<n> is an init container's. No counts at all
+# containers. Its uid is uid-of-<name>. A count written init:<n> is an init container's. No counts at all
 # is a pod with no container statuses yet. LIVE_POD_DELETING=true in front
 # makes it one that is being deleted.
 live_pod() {
@@ -270,8 +344,8 @@ live_pod() {
   fi
 
   mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster/pods"
-  printf '{"metadata":{"name":"%s"%s%s},"status":{"phase":"%s"%s}}' \
-    "${name}" "${labels}" "${deleting}" "${phase}" "${statuses}" \
+  printf '{"metadata":{"name":"%s","uid":"uid-of-%s"%s%s},"status":{"phase":"%s"%s}}' \
+    "${name}" "${name}" "${labels}" "${deleting}" "${phase}" "${statuses}" \
     > "${RUN_BASE_PATH}/work/mock-k-cluster/pods/${name}"
 }
 
@@ -542,6 +616,19 @@ touch "${output_dir}/oci-images-${label}-unsorted"
 touch "${output_dir}/oci-images-${label}-sorted"
 MOCK
   chmod +x "${TEST_MOCK_BIN}/scan-images"
+}
+
+# A monitor-environment that finds the environment stable at once, or exits
+# with the code given: 63 unrecoverable, 64 out of time, anything else for the
+# script itself going wrong
+install_mock_monitor_environment() {
+  local exit_code="${1:-0}"
+  cat > "${TEST_MOCK_BIN}/monitor-environment" << MOCK
+#!/usr/bin/env bash
+echo "monitor-environment" >> "\${RUN_BASE_PATH}/work/k-commands.log"
+exit ${exit_code}
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/monitor-environment"
 }
 
 install_mock_notify_images_changed() {

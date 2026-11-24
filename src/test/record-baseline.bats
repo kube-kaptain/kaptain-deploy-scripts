@@ -160,11 +160,11 @@ Job|migrate|api/job-migrate.yaml" ]
   [ "$(<"${BASELINE}/long-running")" = "Deployment|api|api/deployment.yaml" ]
 }
 
-@test "record-baseline writes all five files even when nothing declared is a workload" {
+@test "record-baseline writes all six files even when nothing declared is a workload" {
   config api-config api/configmap.yaml
   run record-baseline
   [ "$status" -eq 0 ]
-  for file in all to-check long-running restart-counts new-jobs; do
+  for file in all to-check long-running restart-counts pod-uids new-jobs; do
     [ -f "${BASELINE}/${file}" ]
     [ ! -s "${BASELINE}/${file}" ]
   done
@@ -183,6 +183,18 @@ Job|migrate|api/job-migrate.yaml" ]
   [ "$(<"${BASELINE}/restart-counts")" = "api-7c9d8f5b6-x2k4q|0
 api-7c9d8f5b6-zz81p|3
 db-0|1" ]
+}
+
+@test "record-baseline records the uid of each of those pods beside its count" {
+  workload Deployment api api/deployment.yaml
+  workload StatefulSet db db/statefulset.yaml
+  live_pod api-7c9d8f5b6-zz81p app=api Running 3
+  live_pod db-0 app=db Running 1
+  live_pod stranger-1 app=stranger Running 4
+  run record-baseline
+  [ "$status" -eq 0 ]
+  [ "$(<"${BASELINE}/pod-uids")" = "api-7c9d8f5b6-zz81p|uid-of-api-7c9d8f5b6-zz81p
+db-0|uid-of-db-0" ]
 }
 
 @test "record-baseline finds pods labelled app.kubernetes.io/name as well as app" {

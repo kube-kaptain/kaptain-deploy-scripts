@@ -150,6 +150,12 @@ replacement_never_came() {
   return 60
 }
 
+# Fails the deploy the same way, with the exit code of a step whose failing was
+# looked at first rather than left to the ERR trap
+fails_with() {
+  return "$1"
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/lib"
 
@@ -305,11 +311,25 @@ run apply-manifests
 if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
   run reapply-seeds-if-changed
 fi
-# After everything else is in: the postdeploy Jobs, waited for unless they
-# say not to. One that fails fails the deploy, with the rest of it live.
+# Everything declared has to come up and stay up, what this deploy changed and
+# what it did not, with no pod restarting, before the deploy is any good. It
+# says what it finds itself and exits 63 for something that cannot get better
+# or 64 for running out of time. Anything else is the script going wrong.
+monitor_outcome=0
+run monitor-environment || monitor_outcome=$?
+if [[ ${monitor_outcome} -ne 0 ]]; then
+  if [[ ${monitor_outcome} -ne 63 && ${monitor_outcome} -ne 64 ]]; then
+    notify-error "Unexpected issue in 'monitor-environment', please report upstream."
+  fi
+  RUN_COMMAND="monitor-environment"
+  fails_with "${monitor_outcome}"
+fi
+
+# After everything else is in and stable: the postdeploy Jobs, waited for
+# unless they say not to. One that fails fails the deploy, with the rest of it
+# live.
 run apply-jobs postdeploy
 # TODO apply in a more sophisticated way
-# TODO verify things are happy after this action - await happiness - but don't accept increasing restarts on anything declared
 # TODO clean up stuff we don't have declared - leave the environment exactly as declared
 
 run scan-images "after"

@@ -1,0 +1,561 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Watch the environment after a deploy until it is stable, or fail the deploy.
+#
+# What is watched is everything declared, whether this deploy changed it or
+# not: every long-running workload in the baseline, and the Jobs this deploy
+# brought. What was there and fine before has to still be fine after. What is
+# in the namespace and not declared is not looked at.
+#
+# Each round asks the cluster once, for the namespace's Deployments,
+# StatefulSets, DaemonSets, Jobs and pods, and judges everything from that.
+#
+# A workload is as it should be when the pods on its current version are as
+# many as it desires and all of them are ready. Pods of a version on its way
+# out are not counted and do not hold anything up.
+#
+#   Deployment, StatefulSet, DaemonSet   by what its controller reports
+#   a bare Pod                           there, and ready
+#   any other kind with a pod spec       its pods are all ready, which is all
+#                                        that can be told of a custom kind
+#
+# A controller counts its ready pods over every version at once. With none of
+# the outgoing version left, that count is the one wanted. Part way through a
+# rollout it is not, and the ready pods on the current version are counted
+# from what says which version a pod is on:
+#
+#   Deployment    its current ReplicaSet's own count. The ReplicaSets are asked
+#                 for only in a round where a Deployment is part way through.
+#   StatefulSet   its pods labelled with the revision its status says is current
+#   DaemonSet     its pods labelled with its current template generation
+#
+# A Job is waited for until it is Complete, if this deploy brought it (it is in
+# the baseline's new-jobs), unless it is a prerequisite or postdeploy Job,
+# which apply-jobs waits for, or suspended, or annotated
+# kaptain.org/main-deploy-job-wait: "false". One with no such annotation
+# follows MAIN_DEPLOY_JOB_WAIT, which waits unless it is false, and one
+# annotated "true" is waited for whatever that says. Set false in an
+# environment, it silences the bad ones for a while and keeps waiting for a
+# good one, as PREREQUISITE_JOB_WAIT and POSTDEPLOY_JOB_WAIT do for theirs.
+#
+# Two things cannot get better, and end the wait at once. Exit 63.
+#
+#   - A pod of a watched workload has restarted: its count is above the one the
+#     baseline has for that very pod, or above zero for a pod the baseline
+#     never saw, a replacement of the same name included. That goes for a
+#     workload this deploy did not touch as much as for one it did.
+#   - A watched Job has Failed.
+#
+# Otherwise it waits, up to MONITOR_ENVIRONMENT_TIMEOUT seconds. Exit 64. Once
+# everything is as it should be it keeps looking for MONITOR_ENVIRONMENT_SETTLE
+# seconds more, saying nothing, before it calls the environment stable: a pod
+# that goes ready and then falls over is caught in that time.
+#
+# A round in which the cluster cannot be asked is a round in which the
+# environment is not known to be stable, and no more than that: it is said, and
+# the next round asks again.
+#
+# The pause between rounds starts at MONITOR_ENVIRONMENT_POLL seconds and
+# doubles every MONITOR_ENVIRONMENT_POLL_DOUBLE_AFTER seconds,
+# MONITOR_ENVIRONMENT_POLL_DOUBLES times: 5s for the first minute, then 10s,
+# 20s, and 40s from there on.
+#
+# Messages. One to start and one to end, and between them the state of
+# whatever is not yet as it should be, through notify-once: a state that lasts
+# many rounds is said once.
+#
+#   Starting stability check for 'run-omg' with timeout of 600 seconds
+#   Environment current state:
+#     api deployment desires 3, has 2 pods, of which 1 is ready
+#     migrate job is still running
+#   Environment declared stable!
+#
+# Any exit other than 0, 63 or 64 is this script going wrong, not the
+# environment, and deploy says so.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=src/scripts/lib/poll.bash
+source "${SCRIPT_DIR}/lib/poll.bash"
+# shellcheck source=src/scripts/lib/workloads.bash
+source "${SCRIPT_DIR}/lib/workloads.bash"
+
+base="${RUN_BASE_PATH:-/kd}"
+manifests_dir="${base}/work/manifests"
+baseline_dir="${base}/work/baseline"
+long_running="${baseline_dir}/long-running"
+new_jobs="${baseline_dir}/new-jobs"
+restart_counts="${baseline_dir}/restart-counts"
+pod_uids="${baseline_dir}/pod-uids"
+purpose="monitor-environment"
+
+# How long to wait for the environment to be stable, and how long it has to
+# stay that way before it is called stable, in seconds
+timeout="${MONITOR_ENVIRONMENT_TIMEOUT:-600}"
+settle="${MONITOR_ENVIRONMENT_SETTLE:-10}"
+# The pause between rounds of asking: the fastest it gets, in seconds, how long
+# before it doubles, and how many times it does
+poll="${MONITOR_ENVIRONMENT_POLL:-5}"
+poll_double_after="${MONITOR_ENVIRONMENT_POLL_DOUBLE_AFTER:-60}"
+poll_doubles="${MONITOR_ENVIRONMENT_POLL_DOUBLES:-3}"
+
+# A declared long-running workload, as
+# <kind>|<name>|<app label on its pod template>|<app.kubernetes.io/name label on it>
+# shellcheck disable=SC2016 # A yq expression, not shell
+DECLARED_WORKLOAD='[.kind // "", .metadata.name // "", ('"${POD_TEMPLATES}"' | .[0].metadata.labels.app // ""), ('"${POD_TEMPLATES}"' | .[0].metadata.labels["app.kubernetes.io/name"] // "")] | join("|")'
+
+# A declared Job, as <name>|<suspended>|<wait annotation, empty if it has none>
+# shellcheck disable=SC2016 # A yq expression, not shell
+DECLARED_JOB='[.metadata.name // "", .spec.suspend // false, .metadata.annotations["kaptain.org/main-deploy-job-wait"] // ""] | join("|")'
+
+# The cluster's answer, as one line for each thing in it:
+#
+#   W|<kind>|<name>|<desired>|<on the current version>|<of any version>|<ready, of any version>|<controller has seen the latest spec>|<current version>
+#   J|<name>|<Complete, Failed or nothing>|<failed pods so far>|<why it Failed>
+#   P|<name>|<app label>|<app.kubernetes.io/name label>|<uid>|<revision it is on>|<template generation it is on>|<restarts>|<Ready>|<phase>|<why it waits>|<how it last exited>
+#
+# The current version is what a pod or a ReplicaSet of that workload carries
+# when it is on it: a Deployment's revision, a StatefulSet's update revision, a
+# DaemonSet's template generation. Pods only where their restart count can
+# still rise, the same ones the baseline recorded.
+# shellcheck disable=SC2016 # A yq expression, not shell
+SEEN='
+  .items[] | (
+    (
+      select(.kind == "Deployment")
+      | ["W", .kind, .metadata.name, .spec.replicas // 1, .status.updatedReplicas // 0, .status.replicas // 0, .status.readyReplicas // 0, ((.status.observedGeneration // 0) >= (.metadata.generation // 0)), .metadata.annotations["deployment.kubernetes.io/revision"] // ""]
+      | join("|")
+    ),
+    (
+      select(.kind == "StatefulSet")
+      | ["W", .kind, .metadata.name, .spec.replicas // 1, .status.updatedReplicas // 0, .status.replicas // 0, .status.readyReplicas // 0, ((.status.observedGeneration // 0) >= (.metadata.generation // 0)), .status.updateRevision // ""]
+      | join("|")
+    ),
+    (
+      select(.kind == "DaemonSet")
+      | ["W", .kind, .metadata.name, .status.desiredNumberScheduled // 0, .status.updatedNumberScheduled // 0, .status.currentNumberScheduled // 0, .status.numberReady // 0, ((.status.observedGeneration // 0) >= (.metadata.generation // 0)), .metadata.annotations["deprecated.daemonset.template.generation"] // ""]
+      | join("|")
+    ),
+    (
+      select(.kind == "Job")
+      | [
+          "J",
+          .metadata.name,
+          ([.status.conditions[] | select(.status == "True" and (.type == "Complete" or .type == "Failed")) | .type] | .[0] // ""),
+          .status.failed // 0,
+          ([.status.conditions[] | select(.status == "True" and .type == "Failed") | (.reason // "no reason given") + ": " + (.message // "no message given")] | .[0] // "")
+        ]
+      | join("|")
+    ),
+    (
+      select(.kind == "Pod")
+      | '"${LIVE_PODS_ONLY}"'
+      | [
+          "P",
+          .metadata.name,
+          .metadata.labels.app // "",
+          .metadata.labels["app.kubernetes.io/name"] // "",
+          .metadata.uid // "",
+          .metadata.labels["controller-revision-hash"] // "",
+          .metadata.labels["pod-template-generation"] // "",
+          '"${POD_RESTARTS}"',
+          ([.status.conditions[] | select(.type == "Ready") | .status] | .[0] // "False"),
+          .status.phase // "Unknown",
+          ([((.status.initContainerStatuses[], .status.containerStatuses[]) | .state.waiting.reason), (.status.conditions[] | select(.type == "PodScheduled" and .status == "False") | .reason)] | map(select(. != null)) | .[0] // ""),
+          ([(.status.initContainerStatuses[], .status.containerStatuses[]) | .lastState.terminated | select(. != null) | (.reason // "unknown") + " (" + (.exitCode | tostring) + ")"] | .[0] // "")
+        ]
+      | join("|")
+    )
+  )
+'
+
+# Each ReplicaSet of a Deployment that has pods, as
+# <its Deployment>|<the revision it is>|<its ready pods>
+# shellcheck disable=SC2016 # A yq expression, not shell
+ACTIVE_REPLICASETS='
+  .items[]
+  | select(.metadata.ownerReferences[0].kind == "Deployment")
+  | select((.status.replicas // 0) > 0)
+  | [.metadata.ownerReferences[0].name, .metadata.annotations["deployment.kubernetes.io/revision"] // "", .status.readyReplicas // 0]
+  | join("|")
+'
+
+for needed in "${long_running}" "${new_jobs}" "${restart_counts}" "${pod_uids}"; do
+  if [[ ! -f "${needed}" ]]; then
+    notify-error "No baseline to hold the environment to, record-baseline has to run first: ${needed}"
+    exit 1
+  fi
+done
+
+# "pod" or "pods", "is" or "are", "time" or "times", for the number given
+pods_for() { if [[ "$1" -eq 1 ]]; then printf 'pod'; else printf 'pods'; fi; }
+are_for() { if [[ "$1" -eq 1 ]]; then printf 'is'; else printf 'are'; fi; }
+times_for() { if [[ "$1" -eq 1 ]]; then printf 'time'; else printf 'times'; fi; }
+
+# What to watch, worked out once.
+#
+# Each workload as <kind>|<name>|<how its pods are found>: by the label, which
+# is what Kaptain requires on every pod template; a bare Pod by its name; or
+# not at all, where the pod template carries neither label with its name. The
+# same rule record-baseline recorded their restart counts by.
+workloads=()
+workload_manifests=()
+while IFS='|' read -r kind _ file; do
+  [[ -n "${kind}" ]] || continue
+  workload_manifests+=("${manifests_dir}/${file}")
+done < "${long_running}"
+
+if [[ ${#workload_manifests[@]} -gt 0 ]]; then
+  if ! declared=$(yq -N "${DECLARED_WORKLOAD}" "${workload_manifests[@]}"); then
+    notify-error "Could not read the declared workloads to watch them"
+    exit 1
+  fi
+  while IFS='|' read -r kind name app_label name_label; do
+    [[ -n "${kind}" ]] || continue
+    if [[ "${kind}" == "Pod" ]]; then
+      workloads+=("${kind}|${name}|name")
+    elif [[ "${app_label}" == "${name}" || "${name_label}" == "${name}" ]]; then
+      workloads+=("${kind}|${name}|label")
+    elif [[ "${kind}" == "Deployment" || "${kind}" == "StatefulSet" || "${kind}" == "DaemonSet" ]]; then
+      workloads+=("${kind}|${name}|none")
+      log "${kind} ${name} has neither app nor app.kubernetes.io/name set to its name on its pod template, so its pods cannot be found and their restarts are not watched"
+    else
+      log "${kind} ${name} has neither app nor app.kubernetes.io/name set to its name on its pod template, so its pods cannot be found and it is not watched at all"
+    fi
+  done <<< "${declared}"
+fi
+
+# Each Job to wait for, by name
+jobs_watched=()
+job_manifests=()
+while IFS='|' read -r kind _ file; do
+  [[ "${kind}" == "Job" ]] || continue
+  case "$(basename "${file}")" in
+    prerequisite-job*.yaml | postdeploy-job*.yaml) continue ;;
+  esac
+  job_manifests+=("${manifests_dir}/${file}")
+done < "${new_jobs}"
+
+if [[ ${#job_manifests[@]} -gt 0 ]]; then
+  if ! declared=$(yq -N "${DECLARED_JOB}" "${job_manifests[@]}"); then
+    notify-error "Could not read the declared Jobs to watch them"
+    exit 1
+  fi
+  while IFS='|' read -r name suspended wait_for; do
+    [[ -n "${name}" ]] || continue
+    if [[ "${suspended}" == "true" ]]; then
+      log "Job ${name} is suspended, not waiting for it"
+    elif [[ "${wait_for}" == "false" ]]; then
+      log "Job ${name} is annotated kaptain.org/main-deploy-job-wait: \"false\", not waiting for it"
+    elif [[ "${wait_for}" == "true" ]]; then
+      # Its own word for it, whatever the environment as a whole is set to
+      jobs_watched+=("${name}")
+    elif [[ "${MAIN_DEPLOY_JOB_WAIT:-true}" == "false" ]]; then
+      log "MAIN_DEPLOY_JOB_WAIT is false and Job ${name} is not annotated kaptain.org/main-deploy-job-wait: \"true\", not waiting for it"
+    else
+      jobs_watched+=("${name}")
+    fi
+  done <<< "${declared}"
+fi
+
+# The restart count each pod had before the deploy, and which pod that was
+declare -A restarts_before=()
+while IFS='|' read -r pod count; do
+  [[ -n "${pod}" ]] || continue
+  restarts_before["${pod}"]="${count}"
+done < "${restart_counts}"
+
+declare -A uid_before=()
+while IFS='|' read -r pod uid; do
+  [[ -n "${pod}" ]] || continue
+  uid_before["${pod}"]="${uid}"
+done < "${pod_uids}"
+
+# Jobs that have finished, or gone, and are no longer asked about
+declare -A job_finished=()
+
+# What a round finds: what goes in the message, the pods that have restarted,
+# what cannot get better, and what to say about each thing still not right if
+# the wait runs out
+state=()
+restarted=()
+unrecoverable=()
+not_stable=()
+
+error_file="$(mktemp)"
+
+# Judge one answer from the cluster, adding to what the round finds
+judge() {
+  local seen="$1"
+
+  # The answer, laid out to look things up in: a workload by kind and name, a
+  # Job by name, and pods by name and by the value of either label
+  local -A workload_seen=()
+  local -A job_seen=()
+  local -A pod_named=()
+  local -A pods_labelled=()
+  local type first second rest pod name_label
+  while IFS='|' read -r type first second rest; do
+    case "${type}" in
+      W)
+        workload_seen["${first}|${second}"]="${rest}"
+        ;;
+      J)
+        job_seen["${first}"]="${second}|${rest}"
+        ;;
+      P)
+        pod="${first}|${second}|${rest}"
+        pod_named["${first}"]="${pod}"
+        name_label="${rest%%|*}"
+        if [[ -n "${second}" ]]; then
+          pods_labelled["${second}"]+="${pod}"$'\n'
+        fi
+        if [[ -n "${name_label}" && "${name_label}" != "${second}" ]]; then
+          pods_labelled["${name_label}"]+="${pod}"$'\n'
+        fi
+        ;;
+    esac
+  done <<< "${seen}"
+
+  # Asked for at most once a round, and only when a Deployment needs them
+  local replicasets_asked=false
+  local -A replicasets_of=()
+
+  local -A restart_reported=()
+  local workload kind name found_by kind_word its_pods reported
+  local desired has all ready observed version outgoing has_ready
+  local pods_there pods_ready pods_on_version_ready pods_not_ready
+  local uid revision generation restarts pod_ready phase waiting last_exit before
+  local active owner replicaset_revision replicaset_ready line pod_not_ready
+  for workload in ${workloads[@]+"${workloads[@]}"}; do
+    IFS='|' read -r kind name found_by <<< "${workload}"
+    kind_word="${kind,,}"
+
+    reported="${workload_seen["${kind}|${name}"]:-}"
+    desired=0
+    has=0
+    all=0
+    ready=0
+    observed=false
+    version=""
+    if [[ -n "${reported}" ]]; then
+      IFS='|' read -r desired has all ready observed version <<< "${reported}"
+    fi
+
+    case "${found_by}" in
+      label) its_pods="${pods_labelled["${name}"]:-}" ;;
+      name) its_pods="${pod_named["${name}"]:-}" ;;
+      *) its_pods="" ;;
+    esac
+
+    pods_there=0
+    pods_ready=0
+    pods_on_version_ready=0
+    pods_not_ready=()
+    while IFS='|' read -r pod _ _ uid revision generation restarts pod_ready phase waiting last_exit; do
+      [[ -n "${pod}" ]] || continue
+      pods_there=$((pods_there + 1))
+      if [[ "${pod_ready}" == "True" ]]; then
+        pods_ready=$((pods_ready + 1))
+        if [[ -n "${version}" ]] && [[ "${kind}" == "StatefulSet" && "${revision}" == "${version}" || "${kind}" == "DaemonSet" && "${generation}" == "${version}" ]]; then
+          pods_on_version_ready=$((pods_on_version_ready + 1))
+        fi
+      else
+        pods_not_ready+=("${pod} is ${phase}${waiting:+: ${waiting}}")
+      fi
+
+      # The count before belongs to the pod that had it. One of the same name
+      # that is not that pod is a new pod, and starts from nothing.
+      before=0
+      if [[ "${uid_before["${pod}"]:-}" == "${uid}" ]]; then
+        before="${restarts_before["${pod}"]:-0}"
+      fi
+      if [[ "${restarts}" -gt "${before}" && -z "${restart_reported["${pod}"]:-}" ]]; then
+        restart_reported["${pod}"]=1
+        restarted+=("${pod} restarted ${restarts} $(times_for "${restarts}") (was ${before})")
+        unrecoverable+=("${pod} (${name} ${kind_word}) restarted ${restarts} $(times_for "${restarts}") (was ${before})${last_exit:+, last exit ${last_exit}}")
+      fi
+    done <<< "${its_pods}"
+
+    active=0
+    case "${kind}" in
+      Deployment | StatefulSet | DaemonSet)
+        if [[ -z "${reported}" ]]; then
+          state+=("${name} ${kind_word} is not in the cluster")
+          not_stable+=("${name} ${kind_word} is not in the cluster")
+          continue
+        fi
+        outgoing=$(( all - has ))
+        if [[ "${observed}" != "true" ]]; then
+          # The controller has not looked at the new spec yet, so what it
+          # reports is still about the old one
+          has=0
+          has_ready=0
+        elif [[ ${outgoing} -le 0 ]]; then
+          # Nothing left of any other version, so every ready pod is ours
+          has_ready="${ready}"
+        elif [[ "${kind}" == "Deployment" ]]; then
+          if [[ "${replicasets_asked}" == "false" ]]; then
+            replicasets_asked=true
+            if replicasets=$(k get replicasets -o json 2> "${error_file}" | yq -p=json -N "${ACTIVE_REPLICASETS}"); then
+              while IFS='|' read -r owner replicaset_revision replicaset_ready; do
+                [[ -n "${owner}" ]] || continue
+                replicasets_of["${owner}"]+="${replicaset_revision}|${replicaset_ready}"$'\n'
+              done <<< "${replicasets}"
+            else
+              log "Could not read the ReplicaSets, so the ready pods of a Deployment part way through a rollout are not known this round: $(head -n 1 "${error_file}")"
+            fi
+          fi
+          has_ready=0
+          while IFS='|' read -r replicaset_revision replicaset_ready; do
+            [[ -n "${replicaset_revision}" ]] || continue
+            active=$((active + 1))
+            if [[ "${replicaset_revision}" == "${version}" ]]; then
+              has_ready="${replicaset_ready}"
+            fi
+          done <<< "${replicasets_of["${name}"]:-}"
+        else
+          has_ready="${pods_on_version_ready}"
+        fi
+        ;;
+      Pod)
+        desired=1
+        has="${pods_there}"
+        has_ready="${pods_ready}"
+        ;;
+      *)
+        # A custom kind says nothing this can read, so it desires what it has
+        desired="${pods_there}"
+        has="${pods_there}"
+        has_ready="${pods_ready}"
+        ;;
+    esac
+
+    if [[ "${has}" -eq "${desired}" && "${has_ready}" -eq "${desired}" ]]; then
+      continue
+    fi
+
+    if [[ "${kind}" == "Deployment" || "${kind}" == "StatefulSet" || "${kind}" == "DaemonSet" || "${kind}" == "Pod" ]]; then
+      line="${name} ${kind_word} desires ${desired}, has ${has} $(pods_for "${has}"), of which ${has_ready} $(are_for "${has_ready}") ready"
+    else
+      line="${name} ${kind_word} has ${has} $(pods_for "${has}"), of which ${has_ready} $(are_for "${has_ready}") ready"
+    fi
+    state+=("${line}")
+    not_stable+=("${line}")
+    if [[ ${active} -gt 1 ]]; then
+      not_stable+=("  has ${active} active replicasets")
+    fi
+    for pod_not_ready in ${pods_not_ready[@]+"${pods_not_ready[@]}"}; do
+      not_stable+=("  ${pod_not_ready}")
+    done
+  done
+
+  local job ended failed why
+  for job in ${jobs_watched[@]+"${jobs_watched[@]}"}; do
+    [[ -z "${job_finished["${job}"]:-}" ]] || continue
+    reported="${job_seen["${job}"]:-}"
+    if [[ -z "${reported}" ]]; then
+      log "Job ${job} is gone from the cluster, deleted or cleaned up by its ttlSecondsAfterFinished, so how it ended cannot be told. No longer waiting for it."
+      job_finished["${job}"]=1
+      continue
+    fi
+    IFS='|' read -r ended failed why <<< "${reported}"
+    if [[ "${ended}" == "Complete" ]]; then
+      job_finished["${job}"]=1
+    elif [[ "${ended}" == "Failed" ]]; then
+      state+=("${job} job has failed and exhausted retries")
+      unrecoverable+=("${job} job: ${why}")
+    elif [[ "${failed}" -gt 0 ]]; then
+      state+=("${job} job failed but has retries left")
+      not_stable+=("${job} job failed but has retries left")
+    else
+      state+=("${job} job is still running")
+      not_stable+=("${job} job is still running")
+    fi
+  done
+
+  state+=(${restarted[@]+"${restarted[@]}"})
+}
+
+# shellcheck disable=SC2154 # ENVIRONMENT set by final environment image build, validated by validate-environment
+notify-info "Starting stability check for '${ENVIRONMENT}' with timeout of ${timeout} seconds"
+
+started=$(date -u '+%s')
+deadline=$(( started + timeout ))
+stable_since=""
+while true; do
+  state=()
+  restarted=()
+  unrecoverable=()
+  not_stable=()
+
+  if seen=$(k get deployments,statefulsets,daemonsets,jobs,pods -o json 2> "${error_file}" | yq -p=json -N "${SEEN}"); then
+    judge "${seen}"
+  else
+    # Not known to be stable this round, and asked again in the next
+    log "Could not read the state of ${ENVIRONMENT}: $(head -n 1 "${error_file}")"
+    state+=("The state of the environment could not be read")
+    not_stable+=("The state of the environment could not be read: $(head -n 1 "${error_file}")")
+  fi
+
+  now=$(date -u '+%s')
+
+  # Everything is as it should be. It has to stay that way for a while, and
+  # nothing is said until it has.
+  if [[ ${#state[@]} -eq 0 ]]; then
+    if [[ -z "${stable_since}" ]]; then
+      stable_since="${now}"
+    fi
+    still_to_settle=$(( settle - (now - stable_since) ))
+    if [[ ${still_to_settle} -le 0 ]]; then
+      break
+    fi
+    pause=$(poll_period "$(( now - started ))" "${poll}" "${poll_double_after}" "${poll_doubles}")
+    if [[ ${pause} -gt ${still_to_settle} ]]; then
+      pause="${still_to_settle}"
+    fi
+    sleep "${pause}"
+    continue
+  fi
+  stable_since=""
+
+  message="Environment current state:"
+  for line in "${state[@]}"; do
+    message+=$'\n'"  ${line}"
+  done
+  notify-once "${purpose}" "${message}"
+
+  if [[ ${#unrecoverable[@]} -gt 0 ]]; then
+    notify-once "${purpose}" "Unrecoverable issues were encountered, exiting early."
+    message="Environment not stable:"
+    for line in "${unrecoverable[@]}"; do
+      message+=$'\n'"  ${line}"
+    done
+    notify-error "${message}"
+    rm -f "${error_file}"
+    exit 63
+  fi
+
+  if [[ ${now} -ge ${deadline} ]]; then
+    notify-once "${purpose}" "Stability check timed out."
+    message="Environment not stable after ${timeout} seconds. Bailing..."
+    for line in ${not_stable[@]+"${not_stable[@]}"}; do
+      message+=$'\n'"  ${line}"
+    done
+    notify-error "${message}"
+    rm -f "${error_file}"
+    exit 64
+  fi
+
+  # Never past the end of the wait, so giving up comes on time
+  pause=$(poll_period "$(( now - started ))" "${poll}" "${poll_double_after}" "${poll_doubles}")
+  if [[ ${pause} -gt $(( deadline - now )) ]]; then
+    pause=$(( deadline - now ))
+  fi
+  sleep "${pause}"
+done
+rm -f "${error_file}"
+
+notify-once "${purpose}" "Environment declared stable!"

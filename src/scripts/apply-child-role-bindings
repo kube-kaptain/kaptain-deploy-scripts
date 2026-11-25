@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Apply each child's RoleBinding in the child's own namespace.
+#
+# After the Namespaces, so the namespace is there to hold it, and before any
+# child's deployer, so that a namespace-only child never starts without the
+# rights to deploy to its own namespace.
+#
+# Each goes through k-<child>-role-binding-only, which the run-platform build
+# generates for that child: locked to the child's namespace and to that one
+# kind, and applying under the child's own field manager, so that the child
+# can apply the same binding itself afterwards without conflict. See
+# validate-child-role-bindings for why k cannot do this.
+#
+# Applied on every run. It restarts nothing.
+#
+# Run-platform deploys only (ENVIRONMENT_TYPE=meta-env).
+set -euo pipefail
+
+if [[ "${ENVIRONMENT_TYPE:-}" != "meta-env" ]]; then
+  notify-error "Only a run-platform (meta-env) deploy applies child role bindings, this is ${ENVIRONMENT_TYPE:-unset}"
+  exit 1
+fi
+
+base="${RUN_BASE_PATH:-/kd}"
+role_binding_dir="${base}/work/child-role-binding"
+apply_log="${base}/work/audit/apply-child-role-bindings.log"
+
+shopt -s globstar nullglob
+for child_dir in "${role_binding_dir}"/*; do
+  [[ -d "${child_dir}" ]] || continue
+  child=$(basename "${child_dir}")
+  script="k-${child}-role-binding-only"
+
+  for file in "${child_dir}"/**/*.yaml; do
+    if ! "${script}" "${file}" >> "${apply_log}" 2>&1; then
+      notify-error "Applying the ${child} role binding in its own namespace failed - inspect ${apply_log}"
+      exit 1
+    fi
+  done
+  log "Applied the ${child} role binding in its own namespace"
+done
+shopt -u globstar nullglob

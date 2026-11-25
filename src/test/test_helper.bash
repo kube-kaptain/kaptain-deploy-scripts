@@ -20,7 +20,7 @@ setup_test_dirs() {
   export TEST_MOCK_BIN
 
   # Create required directory structure under RUN_BASE_PATH
-  # Note: work subdirs (decrypted, manifests, audit, oci-images) are created by scripts
+  # Note: work subdirs (decrypted, manifests, audit, baseline) are created by scripts
   mkdir -p "${TEST_RUN_BASE}/secrets"
   mkdir -p "${TEST_RUN_BASE}/manifests"
   mkdir -p "${TEST_RUN_BASE}/work"
@@ -66,14 +66,364 @@ if [[ "$1" == "get" ]] && [[ "$2" == "--raw" ]]; then
   exit 0
 fi
 
+# get customresourcedefinition <name>: is it Established yet? Yes, unless a
+# test said it takes some rounds of asking with crd_established_after
+if [[ "$1" == "get" && "$2" == "customresourcedefinition" ]]; then
+  rounds_file="${RUN_BASE_PATH}/work/mock-k-cluster/crd-rounds-$3"
+  rounds_left=0
+  if [[ -f "${rounds_file}" ]]; then
+    rounds_left=$(<"${rounds_file}")
+  fi
+  if [[ "${rounds_left}" -gt 0 ]]; then
+    echo "$((rounds_left - 1))" > "${rounds_file}"
+    exit 0
+  fi
+  echo "True"
+  exit 0
+fi
+
+# create: works unless a test said otherwise
+if [[ "$1" == "create" && -f "${RUN_BASE_PATH}/work/mock-k-cluster/create-fails" ]]; then
+  echo "Error from server (Forbidden): mocks is forbidden" >&2
+  exit 1
+fi
+
+# get pods -o json: every pod a test has put in the namespace with live_pod,
+# as the list kubectl answers with
+if [[ "$*" == "get pods -o json" ]]; then
+  if [[ -f "${RUN_BASE_PATH}/work/mock-k-cluster/pods-fails" ]]; then
+    echo "Error from server (Forbidden): pods is forbidden" >&2
+    exit 1
+  fi
+  printf '{"apiVersion":"v1","kind":"List","items":['
+  separator=""
+  for pod_file in "${RUN_BASE_PATH}/work/mock-k-cluster/pods"/*; do
+    [[ -f "${pod_file}" ]] || continue
+    printf '%s%s' "${separator}" "$(<"${pod_file}")"
+    separator=","
+  done
+  printf ']}\n'
+  exit 0
+fi
+
+# get deployments,statefulsets,daemonsets,jobs,pods -o json: what
+# monitor-environment asks each round. A test describes the cluster as it is
+# from some round on by putting one JSON object per file in a dir named for
+# that round, mock-k-cluster/snapshot/<round>. Each ask gets the latest round
+# described that is not after it. Nothing described is an empty namespace.
+#
+# get replicasets -o json: the ReplicaSet-* files of that same round, which it
+# asks for only when a Deployment is part way through a rollout.
+#
+# A test makes the first sort of ask fail with a snapshot-fails file: every
+# time if it is empty, or for as many asks as the number in it.
+if [[ "$*" == "get replicasets -o json" ]]; then
+  snapshots="${RUN_BASE_PATH}/work/mock-k-cluster/snapshot"
+  asked=0
+  if [[ -f "${RUN_BASE_PATH}/work/mock-k-cluster/snapshots-asked" ]]; then
+    asked=$(<"${RUN_BASE_PATH}/work/mock-k-cluster/snapshots-asked")
+  fi
+  latest=0
+  for round_dir in "${snapshots}"/*; do
+    [[ -d "${round_dir}" ]] || continue
+    round="$(basename "${round_dir}")"
+    if [[ "${round}" -le "${asked}" && "${round}" -gt "${latest}" ]]; then
+      latest="${round}"
+    fi
+  done
+  printf '{"apiVersion":"v1","kind":"List","items":['
+  separator=""
+  for seen_file in "${snapshots}/${latest}"/ReplicaSet-*; do
+    [[ -f "${seen_file}" ]] || continue
+    printf '%s%s' "${separator}" "$(<"${seen_file}")"
+    separator=","
+  done
+  printf ']}\n'
+  exit 0
+fi
+
+if [[ "$*" == "get deployments,statefulsets,daemonsets,jobs,pods -o json" ]]; then
+  snapshots="${RUN_BASE_PATH}/work/mock-k-cluster/snapshot"
+  asked=1
+  if [[ -f "${RUN_BASE_PATH}/work/mock-k-cluster/snapshots-asked" ]]; then
+    asked=$(( $(<"${RUN_BASE_PATH}/work/mock-k-cluster/snapshots-asked") + 1 ))
+  fi
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  echo "${asked}" > "${RUN_BASE_PATH}/work/mock-k-cluster/snapshots-asked"
+  fails_file="${RUN_BASE_PATH}/work/mock-k-cluster/snapshot-fails"
+  if [[ -f "${fails_file}" ]]; then
+    fails_left=$(<"${fails_file}")
+    if [[ -z "${fails_left}" || "${fails_left}" -gt 0 ]]; then
+      if [[ -n "${fails_left}" ]]; then
+        echo "$((fails_left - 1))" > "${fails_file}"
+      fi
+      echo "Error from server (Forbidden): deployments.apps is forbidden" >&2
+      exit 1
+    fi
+  fi
+  latest=0
+  for round_dir in "${snapshots}"/*; do
+    [[ -d "${round_dir}" ]] || continue
+    round="$(basename "${round_dir}")"
+    if [[ "${round}" -le "${asked}" && "${round}" -gt "${latest}" ]]; then
+      latest="${round}"
+    fi
+  done
+  printf '{"apiVersion":"v1","kind":"List","items":['
+  separator=""
+  for seen_file in "${snapshots}/${latest}"/*; do
+    [[ -f "${seen_file}" ]] || continue
+    printf '%s%s' "${separator}" "$(<"${seen_file}")"
+    separator=","
+  done
+  printf ']}\n'
+  exit 0
+fi
+
 # Return empty for jsonpath queries (oci-images)
 if [[ "$*" == *"-o jsonpath"* ]] || [[ "$*" == *"-o go-template"* ]]; then
   exit 0
 fi
+
+# A small fake cluster for the scripts that compare a set with the cluster and
+# reapply it. An object is kept under the path of the manifest that declares
+# it, which is how those scripts address it too (get -f, apply -f). Tests put
+# objects in with cluster_holds and cluster_would_make.
+cluster="${RUN_BASE_PATH}/work/mock-k-cluster"
+manifest=""
+previous=""
+for argument in "$@"; do
+  if [[ "${previous}" == "-f" ]]; then
+    manifest="${argument%/}"
+  fi
+  previous="${argument}"
+done
+held="${cluster}/${manifest//\//_}"
+
+# get -f <manifest> -o yaml or -o name: the live object, or NotFound
+if [[ "$1" == "get" && ("$*" == *"-o yaml"* || "$*" == *"-o name"*) && -n "${manifest}" ]]; then
+  if [[ -f "${cluster}/get-fails" ]]; then
+    echo "Error from server (Forbidden): mocks is forbidden" >&2
+    exit 1
+  fi
+  # A Job a test has said disappears once applied
+  if [[ -f "${held}" && -f "${held}.gone" ]]; then
+    echo "Error from server (NotFound): jobs.batch \"$(basename "${manifest}")\" not found" >&2
+    exit 1
+  fi
+  if [[ -f "${held}" ]]; then
+    cat "${held}"
+    # A Job a test has given an ending with job_ends: its status, once it has
+    # been asked about as many times as the test said it takes
+    if [[ -f "${held}.status" ]]; then
+      rounds_left=$(<"${held}.status-rounds")
+      if [[ "${rounds_left}" -gt 0 ]]; then
+        echo "$((rounds_left - 1))" > "${held}.status-rounds"
+      else
+        cat "${held}.status"
+      fi
+    fi
+    exit 0
+  fi
+  echo "Error from server (NotFound): mocks \"$(basename "${manifest}")\" not found" >&2
+  exit 1
+fi
+
+# apply --dry-run=server ... -o yaml: what the object would become. The
+# manifest itself unless a test said otherwise.
+if [[ "$1" == "apply" && "$*" == *"--dry-run=server"* && "$*" == *"-o yaml"* ]]; then
+  # As kubectl words a field manager conflict, advice and all
+  if [[ -f "${cluster}/dry-run-fails" ]]; then
+    {
+      echo "error: Apply failed with 1 conflict: conflict with \"someone-else\" using apps/v1: .spec.replicas"
+      echo "Please review the fields above--they currently have other managers. Here"
+      echo "are the ways you can resolve this warning:"
+      echo "* If you intend to manage all of these fields, please re-run the apply"
+      echo "  command with the \`--force-conflicts\` flag."
+    } >&2
+    exit 1
+  fi
+  # Any other refusal
+  if [[ -f "${cluster}/dry-run-invalid-fails" ]]; then
+    echo "The mocks \"$(basename "${manifest}")\" is invalid: spec: Invalid value: field is immutable" >&2
+    exit 1
+  fi
+  if [[ -f "${held}.wanted" ]]; then
+    cat "${held}.wanted"
+  else
+    cat "${manifest}"
+  fi
+  exit 0
+fi
+
+# A real apply puts every manifest it is given into the cluster
+if [[ "$1" == "apply" && "$*" != *"--dry-run"* && -n "${manifest}" ]]; then
+  if [[ -f "${cluster}/apply-fails" ]]; then
+    echo "Apply failed with 1 conflict: conflict with \"someone-else\"" >&2
+    exit 1
+  fi
+  mkdir -p "${cluster}"
+  if [[ -d "${manifest}" ]]; then
+    while IFS= read -r applied; do
+      cp "${applied}" "${cluster}/${applied//\//_}"
+    done < <(find "${manifest}" -type f -name '*.yaml')
+  elif [[ -f "${manifest}" ]]; then
+    cp "${manifest}" "${held}"
+  fi
+fi
+
 echo "mock: $*"
 MOCK
   chmod +x "${TEST_MOCK_BIN}/k-standard"
   cp "${TEST_MOCK_BIN}/k-standard" "${TEST_MOCK_BIN}/k"
+}
+
+# Where the mock k's fake cluster keeps the object a manifest declares
+cluster_path() {
+  local manifest="$1"
+  printf '%s/work/mock-k-cluster/%s' "${RUN_BASE_PATH}" "${manifest//\//_}"
+}
+
+# Put an object in the fake cluster as the live form of a manifest. With no
+# document it is the manifest as written, which is what the cluster holds
+# straight after that manifest was applied.
+cluster_holds() {
+  local manifest="$1"
+  local document="${2:-$1}"
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  cp "${document}" "$(cluster_path "${manifest}")"
+}
+
+# Say what a dry-run of a manifest answers, when it is not just the manifest:
+# the object as it would be, with whatever other managers own still on it
+cluster_would_make() {
+  local manifest="$1"
+  local document="$2"
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  cp "${document}" "$(cluster_path "${manifest}").wanted"
+}
+
+# Put a pod in the fake cluster's namespace: its name, the one label it carries
+# (key=value, or none), its phase, then the restart count of each of its
+# containers. Its uid is uid-of-<name>. A count written init:<n> is an init container's. No counts at all
+# is a pod with no container statuses yet. LIVE_POD_DELETING=true in front
+# makes it one that is being deleted.
+live_pod() {
+  local name="$1"
+  local label="$2"
+  local phase="$3"
+  shift 3
+
+  local labels=""
+  if [[ "${label}" != "none" ]]; then
+    labels=",\"labels\":{\"${label%%=*}\":\"${label#*=}\"}"
+  fi
+
+  local deleting=""
+  if [[ "${LIVE_POD_DELETING:-false}" == "true" ]]; then
+    deleting=',"deletionTimestamp":"2026-11-23T00:00:00Z"'
+  fi
+
+  local containers=""
+  local init_containers=""
+  local count
+  for count in "$@"; do
+    if [[ "${count}" == init:* ]]; then
+      init_containers+="${init_containers:+,}{\"name\":\"init\",\"restartCount\":${count#init:}}"
+    else
+      containers+="${containers:+,}{\"name\":\"main\",\"restartCount\":${count}}"
+    fi
+  done
+
+  local statuses=""
+  if [[ -n "${init_containers}" ]]; then
+    statuses+=",\"initContainerStatuses\":[${init_containers}]"
+  fi
+  if [[ -n "${containers}" ]]; then
+    statuses+=",\"containerStatuses\":[${containers}]"
+  fi
+
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster/pods"
+  printf '{"metadata":{"name":"%s","uid":"uid-of-%s"%s%s},"status":{"phase":"%s"%s}}' \
+    "${name}" "${name}" "${labels}" "${deleting}" "${phase}" "${statuses}" \
+    > "${RUN_BASE_PATH}/work/mock-k-cluster/pods/${name}"
+}
+
+# Make one kind of call to the fake cluster fail: get, pods, dry-run,
+# dry-run-invalid, apply or create. pods is the read of the namespace's pods.
+# Both dry-run kinds are the one that asks for the result
+# (-o yaml): dry-run is refused as a field manager conflict, dry-run-invalid
+# for another reason. install_mock_k_failing_dry_run rejects every dry-run.
+cluster_fails() {
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  touch "${RUN_BASE_PATH}/work/mock-k-cluster/$1-fails"
+}
+
+# Give a Job an ending, for once its manifest has been applied: Complete or
+# Failed, after it has been asked about that many times and found still
+# running (none unless said). A Failed one says BackoffLimitExceeded.
+job_ends() {
+  local manifest="$1"
+  local ending="$2"
+  local rounds="${3:-0}"
+  local held
+  held="$(cluster_path "${manifest}")"
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  echo "${rounds}" > "${held}.status-rounds"
+  {
+    echo "status:"
+    echo "  conditions:"
+    echo "    - type: ${ending}"
+    echo "      status: \"True\""
+    if [[ "${ending}" == "Failed" ]]; then
+      echo "      reason: BackoffLimitExceeded"
+      echo "      message: Job has reached the specified backoff limit"
+    fi
+  } > "${held}.status"
+}
+
+# Make a Job disappear once applied, as its ttlSecondsAfterFinished would
+job_vanishes() {
+  local manifest="$1"
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  touch "$(cluster_path "${manifest}").gone"
+}
+
+# Make a CRD answer "not Established yet" for that many rounds of asking
+crd_established_after() {
+  local name="$1"
+  local rounds="$2"
+  mkdir -p "${RUN_BASE_PATH}/work/mock-k-cluster"
+  echo "${rounds}" > "${RUN_BASE_PATH}/work/mock-k-cluster/crd-rounds-${name}"
+}
+
+# The script a run-platform build generates for a child that brings a role
+# binding in its own namespace. This one records how it was called, in
+# work/role-binding-commands.log, and refuses if a test asked it to with
+# child_role_binding_script_refuses. It also records, in
+# work/role-binding-order.log, how many calls k had taken by then, so a test
+# can tell what it came before and after.
+install_child_role_binding_script() {
+  local child="$1"
+  cat > "${TEST_MOCK_BIN}/k-${child}-role-binding-only" << MOCK
+#!/usr/bin/env bash
+echo "k-${child}-role-binding-only \$*" >> "\${RUN_BASE_PATH}/work/role-binding-commands.log"
+k_calls=0
+if [[ -f "\${RUN_BASE_PATH}/work/k-commands.log" ]]; then
+  k_calls=\$(wc -l < "\${RUN_BASE_PATH}/work/k-commands.log")
+fi
+echo "\$((k_calls)) \$*" >> "\${RUN_BASE_PATH}/work/role-binding-order.log"
+if [[ -f "\${RUN_BASE_PATH}/work/role-binding-refused-${child}" ]]; then
+  echo "refused: \$*" >&2
+  exit 1
+fi
+echo "mock: k-${child}-role-binding-only \$*"
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/k-${child}-role-binding-only"
+}
+
+child_role_binding_script_refuses() {
+  touch "${RUN_BASE_PATH}/work/role-binding-refused-$1"
 }
 
 # Every dry-run is rejected, everything else behaves as the standard mock does.
@@ -174,6 +524,38 @@ MOCK
   chmod +x "${TEST_MOCK_BIN}/sleep"
 }
 
+# A date that answers "seconds since the epoch" (date -u +%s) with whatever a
+# test last said the time is. Anything else goes to the real date.
+install_mock_clock() {
+  local real_date
+  real_date="$(command -v date)"
+  cat > "${TEST_MOCK_BIN}/date" << MOCK
+#!/usr/bin/env bash
+if [[ "\$*" == "-u +%s" && -f "\${RUN_BASE_PATH}/work/mock-clock" ]]; then
+  cat "\${RUN_BASE_PATH}/work/mock-clock"
+  exit 0
+fi
+exec "${real_date}" "\$@"
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/date"
+}
+
+clock_reads() {
+  echo "$1" > "${RUN_BASE_PATH}/work/mock-clock"
+}
+
+# A sleep that takes no time at all, writes down how long it was asked for in
+# work/sleeps.log, and moves the mock clock on by that much. Needs
+# install_mock_clock and a clock_reads first.
+install_mock_sleep_that_moves_the_clock() {
+  cat > "${TEST_MOCK_BIN}/sleep" << 'MOCK'
+#!/usr/bin/env bash
+echo "$1" >> "${RUN_BASE_PATH}/work/sleeps.log"
+echo "$(( $(<"${RUN_BASE_PATH}/work/mock-clock") + $1 ))" > "${RUN_BASE_PATH}/work/mock-clock"
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/sleep"
+}
+
 install_mock_sleep_killer() {
   # Mock sleep that kills parent for >=2s - for breaking infinite loops
   local real_sleep
@@ -228,12 +610,25 @@ install_mock_scan_images() {
   cat > "${TEST_MOCK_BIN}/scan-images" << 'MOCK'
 #!/usr/bin/env bash
 label="$1"
-output_dir="${RUN_BASE_PATH}/work/oci-images"
+output_dir="${RUN_BASE_PATH}/work/baseline/oci-images"
 mkdir -p "${output_dir}"
 touch "${output_dir}/oci-images-${label}-unsorted"
 touch "${output_dir}/oci-images-${label}-sorted"
 MOCK
   chmod +x "${TEST_MOCK_BIN}/scan-images"
+}
+
+# A monitor-environment that finds the environment stable at once, or exits
+# with the code given: 63 unrecoverable, 64 out of time, anything else for the
+# script itself going wrong
+install_mock_monitor_environment() {
+  local exit_code="${1:-0}"
+  cat > "${TEST_MOCK_BIN}/monitor-environment" << MOCK
+#!/usr/bin/env bash
+echo "monitor-environment" >> "\${RUN_BASE_PATH}/work/k-commands.log"
+exit ${exit_code}
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/monitor-environment"
 }
 
 install_mock_notify_images_changed() {

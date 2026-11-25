@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Apply the cluster-scoped resources child environments have delegated to this
+# run-platform, each child's under that child's own field manager.
+#
+# See validate-on-behalf for what they are and why they are not part of the
+# tree. One child at a time, in name order, from
+# /kd/cluster-scoped-on-behalf/<child>, as kaptain/env/<child>: ownership reads
+# as if the child had applied them itself, so a child that used to hold
+# cluster-admin and applied them then does not conflict with this now.
+#
+# Applied on every run. None of it restarts anything. Before stages/deploy and
+# the seeds, so a child's deployer never starts ahead of what it relies on.
+#
+# A failure stops here, with the remaining children untouched.
+#
+# Run-platform deploys only (ENVIRONMENT_TYPE=meta-env).
+set -euo pipefail
+
+if [[ "${ENVIRONMENT_TYPE:-}" != "meta-env" ]]; then
+  notify-error "Only a run-platform (meta-env) deploy applies resources delegated to it, this is ${ENVIRONMENT_TYPE:-unset}"
+  exit 1
+fi
+
+base="${RUN_BASE_PATH:-/kd}"
+on_behalf_dir="${base}/cluster-scoped-on-behalf"
+apply_log="${base}/work/audit/apply-on-behalf.log"
+
+shopt -s nullglob
+for child_dir in "${on_behalf_dir}"/*; do
+  [[ -d "${child_dir}" ]] || continue
+  child=$(basename "${child_dir}")
+
+  if ! k apply --server-side --field-manager="kaptain/env/${child}" -R -f "${child_dir}" >> "${apply_log}" 2>&1; then
+    notify-error "Applying the cluster-scoped resources ${child} delegated failed - inspect ${apply_log}"
+    exit 1
+  fi
+  log "Applied the cluster-scoped resources ${child} delegated"
+done
+shopt -u nullglob

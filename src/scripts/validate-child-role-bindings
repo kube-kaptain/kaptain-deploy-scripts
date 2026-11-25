@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Validate the one kind of manifest validate-manifests cannot: a child's
+# RoleBinding in the child's own namespace.
+#
+# It grants the deployer of a child environment with parent delegation admin of
+# its own namespace, so it has to live there. The k wrapper is locked to the
+# run-platform's namespace and refuses it, so split-manifests takes it out of
+# the tree to work/child-role-binding/<child>, and it goes through a script the
+# run-platform build generates for that child: k-<child>-role-binding-only,
+# locked to the child's namespace and to that one kind.
+#
+# For each child with such a binding:
+#   - The script must be in this image. Without it the binding cannot be
+#     applied at all.
+#   - The binding is dry-run through the script. The child's namespace is
+#     already in the cluster by now: apply-namespaces runs before validation.
+#
+# Every problem is reported before failing, like validate-manifests.
+#
+# Run-platform deploys only (ENVIRONMENT_TYPE=meta-env).
+set -euo pipefail
+
+if [[ "${ENVIRONMENT_TYPE:-}" != "meta-env" ]]; then
+  notify-error "Only a run-platform (meta-env) deploy validates child role bindings, this is ${ENVIRONMENT_TYPE:-unset}"
+  exit 1
+fi
+
+base="${RUN_BASE_PATH:-/kd}"
+role_binding_dir="${base}/work/child-role-binding"
+audit_dir="${base}/work/audit/validation"
+
+mkdir -p "${audit_dir}"
+
+failures=0
+
+shopt -s globstar nullglob
+for child_dir in "${role_binding_dir}"/*; do
+  [[ -d "${child_dir}" ]] || continue
+  child=$(basename "${child_dir}")
+  script="k-${child}-role-binding-only"
+
+  if ! command -v "${script}" > /dev/null 2>&1; then
+    notify-error "${script} is not in this image, so the ${child} role binding in its own namespace cannot be applied. The run-platform build generates it for each child that brings one."
+    failures=$((failures + 1))
+    continue
+  fi
+
+  for file in "${child_dir}"/**/*.yaml; do
+    relative="${file#"${role_binding_dir}/"}"
+    audit_file="${audit_dir}/child-role-binding_${relative//\//_}"
+    audit_file="${audit_file%.yaml}.txt"
+
+    if "${script}" --dry-run "${file}" > "${audit_file}" 2>&1; then
+      log "Validated the ${child} role binding in its own namespace"
+    else
+      notify-error "The ${child} role binding was refused: ${relative} - inspect ${audit_file}"
+      failures=$((failures + 1))
+    fi
+  done
+done
+shopt -u globstar nullglob
+
+if [[ ${failures} -gt 0 ]]; then
+  exit 1
+fi

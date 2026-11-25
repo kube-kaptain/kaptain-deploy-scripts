@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# A run-platform checks its own set before it does anything else to the
+# cluster, so that it never deploys on stale config or secrets.
+#
+# The image auto-updater moves a run-platform to a new image, and nothing else.
+# The ConfigMap, Secret, mounts and the rest of what surrounds the pod are still
+# the previous version's until something applies the new ones. That something
+# is the run-platform itself: it starts on the old config, which is good enough
+# to get this far, and compares work/self with the cluster.
+#
+#   - The same: carry on with the deploy.
+#   - Different: say so, and apply work/self in full, exactly as written. This
+#     pod is running, so the cluster already agrees with the image tag in its
+#     own manifests.
+#
+# Whether the apply changed what runs this pod is then read off the cluster,
+# from the one workload that does: the Deployment named for this run-platform,
+# or in job mode its deployer CronJob (named for it, suspended, with keelson
+# annotations). Its template before the apply, and after.
+#
+#   - Unchanged: no restart is coming, carry on. This is the same version
+#     reapplied to repair drift, a role binding edited by hand say. An upgrade
+#     always changes the template, which carries the version.
+#   - Changed, deployment mode: Kubernetes replaces this pod. Stand down and
+#     wait for that.
+#   - Changed, job mode: nothing restarts a Job. Say so, start a new one from
+#     the updated CronJob, and stop here without waiting for it: the new Job
+#     writes to the same chat thread, so this one's last word has to be out
+#     before that one's first.
+#
+# If a set has no such workload, someone has overridden the manifests and there
+# is nothing to read: the template counts as unchanged.
+#
+# What deploy should do next is written to work/self-outcome: continue,
+# stand-down or handed-over. The exit status only says whether this worked.
+#
+# Never forces conflicts. Objects applied by hand under another field manager,
+# after a bootstrap say, are reported and left for apply-force.
+#
+# Run-platform deploys only (ENVIRONMENT_TYPE=meta-env): an environment's own
+# set is applied by its run-platform, never by itself.
+set -euo pipefail
+
+if [[ "${ENVIRONMENT_TYPE:-}" != "meta-env" ]]; then
+  notify-error "Only a run-platform (meta-env) deploy reapplies its own manifests, this is ${ENVIRONMENT_TYPE:-unset}"
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=src/scripts/lib/reapply.bash
+source "${SCRIPT_DIR}/lib/reapply.bash"
+
+work="${RUN_BASE_PATH:-/kd}/work"
+self_dir="${work}/self"
+audit_dir="${work}/audit"
+differences="${audit_dir}/compare/self/differences"
+apply_log="${audit_dir}/apply-self.log"
+outcome="${work}/self-outcome"
+
+# The live template of the one workload in our own set that runs this pod.
+# Nothing if the set holds no such workload.
+own_template() {
+  local file
+  for file in "${self_dir}"/**/*.yaml; do
+    # shellcheck disable=SC2154 # DEPLOY_MODE and ENVIRONMENT set by final environment image build, validated by validate-environment
+    if [[ "${DEPLOY_MODE}" == "job" ]]; then
+      is_deployer_cronjob "${file}" "${ENVIRONMENT}" || continue
+    else
+      is_deployer_deployment "${file}" "${ENVIRONMENT}" || continue
+    fi
+    # Returned explicitly: errexit is off inside the $(...) this is called from
+    live_workload_template "${file}" || return 1
+    return 0
+  done
+}
+
+shopt -s globstar nullglob
+
+compare-set "${self_dir}"
+
+if [[ ! -s "${differences}" ]]; then
+  log "Our manifests match our resources"
+  echo "continue" > "${outcome}"
+  exit 0
+fi
+
+notify-info "Our manifests differ from our resources ($(differences_summary "${differences}")). Reapplying, which will cause a restart. This check should pass after that."
+
+before=$(own_template)
+
+if ! apply "${self_dir}" > "${apply_log}" 2>&1; then
+  notify-error "Reapplying our own manifests failed - inspect ${apply_log}
+If it reports a conflict with another field manager, these were last applied by hand: apply-force ${self_dir} takes them back."
+  exit 1
+fi
+
+after=$(own_template)
+
+if [[ "${before}" == "${after}" ]]; then
+  notify-info "Reapplied our own manifests. Nothing that runs this pod changed, so no restart is coming after all - carrying on with the deploy."
+  echo "continue" > "${outcome}"
+  exit 0
+fi
+
+if [[ "${DEPLOY_MODE}" != "job" ]]; then
+  echo "stand-down" > "${outcome}"
+  exit 0
+fi
+
+# Job mode. A Job that a reapply started and that still changes its own CronJob
+# is going round in circles, so it stops rather than start another.
+if [[ "${HOSTNAME:-}" == *-reapply-* ]]; then
+  notify-error "This Job was started by a reapply of our own manifests and has just had to reapply them again - not starting another"
+  exit 1
+fi
+
+# The deployer CronJob is named for the run-platform, so that is its name.
+# The message goes out before the Job is created, and nothing waits for the
+# Job afterwards: both write to the same chat thread.
+job="${ENVIRONMENT}-reapply-$(date -u '+%s')"
+notify-info "Starting Job ${job} from our updated CronJob to carry on with the deploy. This one stops here."
+
+if ! k create job --from="cronjob/${ENVIRONMENT}" "${job}" >> "${apply_log}" 2>&1; then
+  notify-error "Could not start Job ${job} from our updated CronJob - inspect ${apply_log}"
+  exit 1
+fi
+
+echo "handed-over" > "${outcome}"

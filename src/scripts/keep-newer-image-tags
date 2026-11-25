@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Keep a child environment from being rolled back by a reapply of its set.
+#
+# A run-platform's copy of a child's set carries the image tag the child had
+# when the run-platform was built. The image auto-updater may have moved the
+# live workload on since. Applied as written, a change to the child's config
+# would put its image back as a side effect.
+#
+# So for each container image in the set: where the live workload runs the same
+# image (registry, namespace and name all match) under a newer tag, the tag in
+# the set's file is replaced with the live one. Newer is version order. An
+# image that does not match, has no tag, or is pinned by digest is left as
+# written, and so is everything when the workload is not in the cluster yet.
+#
+# The files are edited in place. They are the copies split-manifests made, so
+# work/manifests is untouched.
+#
+# Usage: keep-newer-image-tags <set-dir>
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "Usage: keep-newer-image-tags <set-dir>" >&2
+  exit 42
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=src/scripts/lib/reapply.bash
+source "${SCRIPT_DIR}/lib/reapply.bash"
+
+set_dir="${1%/}"
+work="${RUN_BASE_PATH:-/kd}/work"
+name="${set_dir#"${work}/"}"
+live_dir="${work}/audit/image-tags/${name}"
+
+if [[ ! -d "${set_dir}" ]]; then
+  notify-error "Set to keep newer image tags in does not exist: ${set_dir}"
+  exit 1
+fi
+
+mkdir -p "${live_dir}"
+
+# An image reference without its tag, empty if it has no tag to compare:
+# untagged, or pinned by digest. The tag is what follows the last colon, but
+# only when that colon is in the last path segment, so a registry port is not
+# mistaken for one.
+image_repository() {
+  local image="$1"
+  if [[ "${image}" != *@* && "${image##*/}" == *:* ]]; then
+    printf '%s' "${image%:*}"
+  fi
+}
+
+shopt -s globstar nullglob
+for file in "${set_dir}"/**/*.yaml; do
+  relative="${file#"${set_dir}/"}"
+  live="${live_dir}/${relative//\//_}"
+  live_fetched=false
+
+  while IFS= read -r image; do
+    repository=$(image_repository "${image}")
+    [[ -n "${repository}" ]] || continue
+    tag="${image##*:}"
+
+    # Fetched once, and only for a file that declares a tagged image
+    if [[ "${live_fetched}" == "false" ]]; then
+      live_fetched=true
+      if ! k get -f "${file}" -o yaml > "${live}" 2> "${live}.err"; then
+        rm -f "${live}"
+        if grep -q "(NotFound)" "${live}.err"; then
+          rm -f "${live}.err"
+          break
+        fi
+        notify-error "Could not read the live object for ${name}/${relative} - inspect ${live}.err"
+        exit 1
+      fi
+      rm -f "${live}.err"
+    fi
+
+    while IFS= read -r live_image; do
+      [[ "$(image_repository "${live_image}")" == "${repository}" ]] || continue
+      live_tag="${live_image##*:}"
+      [[ "${live_tag}" != "${tag}" ]] || continue
+
+      # Version order, older first
+      { IFS= read -r _; IFS= read -r newer; } < <(printf '%s\n%s\n' "${tag}" "${live_tag}" | sort -V)
+      [[ "${newer}" == "${live_tag}" ]] || continue
+
+      WRITTEN="${image}" KEPT="${live_image}" \
+        yq --inplace "(${CONTAINER_IMAGES} | select(. == strenv(WRITTEN))) = strenv(KEPT)" "${file}"
+      log "${name}/${relative}: kept the newer live tag ${live_tag} over ${tag} for ${repository}"
+      break
+    done < <(yq "${CONTAINER_IMAGES}" "${live}")
+  done < <(yq "${CONTAINER_IMAGES}" "${file}" | sort -u)
+
+  rm -f "${live}"
+done
+shopt -u globstar nullglob

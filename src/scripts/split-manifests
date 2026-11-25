@@ -2,97 +2,195 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
 #
-# Split phase: set aside the run-platform's own set and every child set marked
-# for seed-and-compare.
+# Split phase: copy every manifest out of the complete tree into the dir of the
+# step that applies it.
 #
-# Run-platform deploys only (ENVIRONMENT_TYPE=meta-env). An environment never
-# holds a marked set, so on an environment deploy any marker fails the deploy.
+# work/manifests is the complete set once the secret work is done, and it stays
+# that way: validation reads it as one tree. Each top-level entry is copied
+# whole to one of:
 #
-# A run-platform's manifests hold one directory per child. Its own set, always
-# named for ENVIRONMENT, moves first to work/self whether marked or not, since
-# it is treated very differently from the rest. Each remaining child whose set
-# carries the seed-and-compare marker (an environment's deployer) then moves to
-# work/seed/<child>. This runs after the secret work, so a set-aside set is
-# complete, and before validation and apply, so those phases only see what is
-# applied now.
+#   work/self            the run-platform's own set, always named for ENVIRONMENT
+#   work/seed/<child>    each child set marked for seed-and-compare
+#   work/stages/deploy   everything else, which is what the deploy applies
 #
-# The marker is a ConfigMap in a namespace that never exists, so a stray one
-# fails the apply rather than landing anywhere. A set-aside set has been held
-# back deliberately, so its marker has done its job and is removed.
+# The first two exist on run-platform deploys only (ENVIRONMENT_TYPE=meta-env).
+# An environment never holds a marked set, so on an environment deploy any
+# marker fails the deploy.
+#
+# Three kinds of manifest then leave the copy they landed in, because they are
+# applied ahead of it. Each keeps the path and file name it has in the tree.
+#
+#   work/stages/crds
+#       Every CustomResourceDefinition. They go in before the tree is even
+#       validated, since a resource of a kind cannot be dry-run until its CRD
+#       is in the cluster. They stay in work/manifests too.
+#   work/stages/namespaces
+#       Every Namespace, so that they all exist before anything that goes into
+#       one. They stay in work/manifests and are validated there like the rest.
+#   work/child-role-binding/<child>
+#       On a run-platform, a child environment's RoleBinding in its own
+#       namespace: one in a run-* folder, not our own, whose namespace is that
+#       folder's name. It is what lets a child with parent delegation deploy to
+#       its namespace. The k
+#       wrapper is locked to the run-platform's namespace and can neither
+#       dry-run nor apply it, so it is taken out of work/manifests as well and
+#       goes through k-<child>-role-binding-only instead.
+#
+# Only a run-platform may bring CRDs or Namespaces. The split does the same on
+# every kind of deploy and leaves the refusing to validate-manifests.
+#
+# The run-platform's own set is treated like any other for this: its Namespace
+# goes to the namespaces stage too. bootstrap, which needs the own set whole
+# for the first apply by hand, takes it from its folder in work/manifests.
+#
+# Only two things are ever taken out of work/manifests: that role binding, and
+# the seed-and-compare marker. The marker is a ConfigMap in a namespace that
+# never exists, so a stray one fails the apply rather than landing anywhere.
+# It is deleted as its set is reached, just before that set is copied.
+#
+# Runs once per container. If any dir it writes is already there it refuses,
+# rather than copy over what an earlier run left and apply a mixture.
 set -euo pipefail
 
 base="${RUN_BASE_PATH:-/kd}"
 work_dir="${base}/work/manifests"
 self_dir="${base}/work/self"
 seed_dir="${base}/work/seed"
+stages_dir="${base}/work/stages"
+crds_dir="${stages_dir}/crds"
+namespaces_dir="${stages_dir}/namespaces"
+deploy_dir="${stages_dir}/deploy"
+role_binding_dir="${base}/work/child-role-binding"
 marker_name="run-environment-seed-and-compare-marker.yaml"
 
 environment_type="${ENVIRONMENT_TYPE:?ENVIRONMENT_TYPE is required (env or meta-env)}"
+
+# Checks first. None of them changes anything, so a deploy that fails here
+# leaves the work dir exactly as it was.
 
 if [[ ! -d "${work_dir}" ]]; then
   notify-error "Manifests work directory does not exist: ${work_dir}"
   exit 1
 fi
 
-# Collected first: the moves below would disturb a find still walking the tree.
-markers=()
-while IFS= read -r -d '' marker; do
-  markers+=("${marker}")
-done < <(find "${work_dir}" -type f -name "${marker_name}" -print0 | sort -z)
-
-if [[ "${environment_type}" != "meta-env" ]]; then
-  if [[ ${#markers[@]} -eq 0 ]]; then
-    log "No seed-and-compare sets to set aside"
-    exit 0
-  fi
-  for marker in "${markers[@]}"; do
-    notify-error "Seed-and-compare marker in a ${environment_type} deploy: ${marker#"${work_dir}"/}"
-  done
-  notify-error "Only a run-platform (meta-env) deploy sets aside seed-and-compare sets"
-  exit 1
-fi
-
-# Every marker is checked before anything moves, self's included: once self is
-# out of the tree a marker misplaced inside it would go unseen.
-for marker in "${markers[@]}"; do
-  # The marker must sit at the top of a child set; anywhere else it cannot say
-  # which set to hold back.
-  if [[ "$(dirname "$(dirname "${marker}")")" != "${work_dir}" ]]; then
-    notify-error "Seed-and-compare marker is not at the top of a child set: ${marker#"${work_dir}"/}"
+for written_dir in "${self_dir}" "${seed_dir}" "${stages_dir}" "${role_binding_dir}"; do
+  if [[ -e "${written_dir}" ]]; then
+    notify-error "Split has already run in this container, refusing to run it again: ${written_dir} exists"
     exit 1
   fi
 done
 
-# shellcheck disable=SC2154 # ENVIRONMENT set by final environment image build, validated by validate-environment
-if [[ ! -d "${work_dir}/${ENVIRONMENT}" ]]; then
-  notify-error "Run-platform's own set does not exist: ${ENVIRONMENT}"
-  exit 1
-fi
+if [[ "${environment_type}" != "meta-env" ]]; then
+  stray_marker=false
+  while IFS= read -r -d '' marker; do
+    notify-error "Seed-and-compare marker in a ${environment_type} deploy: ${marker#"${work_dir}"/}"
+    stray_marker=true
+  done < <(find "${work_dir}" -type f -name "${marker_name}" -print0 | sort -z)
 
-mv "${work_dir}/${ENVIRONMENT}" "${self_dir}"
-log "Set aside run-platform's own set: ${ENVIRONMENT} -> self"
-if [[ -f "${self_dir}/${marker_name}" ]]; then
-  rm "${self_dir}/${marker_name}"
-  log "Removed seed-and-compare marker from ${ENVIRONMENT}"
-fi
-
-seeded=0
-for marker in "${markers[@]}"; do
-  child_dir=$(dirname "${marker}")
-  child=$(basename "${child_dir}")
-  if [[ "${child}" == "${ENVIRONMENT}" ]]; then
-    continue
+  if [[ "${stray_marker}" == "true" ]]; then
+    notify-error "Only a run-platform (meta-env) deploy holds seed-and-compare sets"
+    exit 1
   fi
-  mkdir -p "${seed_dir}"
-  mv "${child_dir}" "${seed_dir}/${child}"
-  log "Set aside for seeding: ${child}"
-  rm "${seed_dir}/${child}/${marker_name}"
-  log "Removed seed-and-compare marker from ${child}"
-  seeded=$((seeded + 1))
-done
-
-if [[ ${seeded} -eq 0 ]]; then
-  log "No seed-and-compare sets to set aside besides the run-platform's own"
 else
-  log "Set aside ${seeded} seed-and-compare set(s) in ${seed_dir}"
+  while IFS= read -r -d '' marker; do
+    # The marker must sit at the top of a child set; anywhere else it cannot say
+    # which set it marks.
+    if [[ "$(dirname "$(dirname "${marker}")")" != "${work_dir}" ]]; then
+      notify-error "Seed-and-compare marker is not at the top of a child set: ${marker#"${work_dir}"/}"
+      exit 1
+    fi
+  done < <(find "${work_dir}" -type f -name "${marker_name}" -print0 | sort -z)
+
+  # shellcheck disable=SC2154 # ENVIRONMENT set by final environment image build, validated by validate-environment
+  if [[ ! -d "${work_dir}/${ENVIRONMENT}" ]]; then
+    notify-error "Run-platform's own set does not exist: ${ENVIRONMENT}"
+    exit 1
+  fi
+fi
+
+# One pass over the top of the tree. For each entry: delete its marker if it
+# has one, copy it whole to where it belongs, then move the Namespaces and the
+# child's own role binding out of that copy. Whether a set is marked is read
+# off the set as it is reached, so nothing is carried between entries.
+#
+# Top-level dot files and dot dirs are not matched by the glob and are not
+# copied. Validation ignores them too, so nothing unvalidated is applied.
+mkdir -p "${deploy_dir}"
+
+shopt -s globstar nullglob
+seeded=0
+for entry in "${work_dir}"/*; do
+  name=$(basename "${entry}")
+
+  marked=false
+  if [[ -f "${entry}/${marker_name}" ]]; then
+    rm "${entry}/${marker_name}"
+    log "Removed seed-and-compare marker from ${name}"
+    marked=true
+  fi
+
+  own=false
+  if [[ "${environment_type}" == "meta-env" && "${name}" == "${ENVIRONMENT}" ]]; then
+    own=true
+    copy="${self_dir}"
+    log "Run-platform's own set: ${name} -> self"
+  elif [[ "${marked}" == "true" ]]; then
+    mkdir -p "${seed_dir}"
+    copy="${seed_dir}/${name}"
+    log "Seed-and-compare set: ${name} -> seed/${name}"
+    seeded=$((seeded + 1))
+  else
+    copy="${deploy_dir}/${name}"
+  fi
+  cp -a "${entry}" "${copy}"
+
+  # The kind and namespace of each manifest in the copy, one yq for the lot
+  if [[ -d "${copy}" ]]; then
+    manifests=("${copy}"/**/*.yaml)
+  elif [[ "${copy}" == *.yaml ]]; then
+    manifests=("${copy}")
+  else
+    manifests=()
+  fi
+  [[ ${#manifests[@]} -gt 0 ]] || continue
+
+  if ! kinds=$(yq -N '[filename, .kind // "", .metadata.namespace // ""] | join("|")' "${manifests[@]}"); then
+    notify-error "Could not read the manifests in ${name} to find its Namespaces"
+    exit 1
+  fi
+
+  while IFS='|' read -r manifest kind namespace; do
+    # Gone already if an earlier document in the same file moved it
+    [[ -f "${manifest}" ]] || continue
+    # The path within the entry: empty for a lone file, /sub/file.yaml in a dir
+    within="${manifest#"${copy}"}"
+
+    if [[ "${kind}" == "CustomResourceDefinition" ]]; then
+      # Same path and file name as in the tree, under the crds stage
+      moved="${crds_dir}/${name}${within}"
+      mkdir -p "$(dirname "${moved}")"
+      mv "${manifest}" "${moved}"
+    elif [[ "${kind}" == "Namespace" ]]; then
+      # Same path and file name as in the tree, under the namespaces stage
+      moved="${namespaces_dir}/${name}${within}"
+      mkdir -p "$(dirname "${moved}")"
+      mv "${manifest}" "${moved}"
+    elif [[ "${environment_type}" == "meta-env" && "${own}" == "false" && "${name}" == run-* && "${kind}" == "RoleBinding" && "${namespace}" == "${name}" ]]; then
+      # Only a child environment's (a run-* folder), and never our own: a
+      # binding in the run-platform's own namespace is an ordinary one that k
+      # applies, and no other kind of folder has a namespace of its own
+      moved="${role_binding_dir}/${name}${within}"
+      mkdir -p "$(dirname "${moved}")"
+      mv "${manifest}" "${moved}"
+      rm "${entry}${within}"
+      log "Role binding in the ${name} namespace: ${name}${within} -> child-role-binding/${name}"
+    fi
+  done <<< "${kinds}"
+done
+shopt -u globstar nullglob
+
+if [[ "${environment_type}" == "meta-env" ]]; then
+  log "Split complete: the run-platform's own set to self, ${seeded} seed-and-compare set(s) to seed, the rest to the stages"
+else
+  log "Split complete, all to the stages"
 fi

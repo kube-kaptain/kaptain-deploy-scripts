@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Validate and apply the namespaces stage, ahead of the validation of
+# everything else.
+#
+# Every Namespace is in before the rest is looked at, straight after the CRDs,
+# so that anything which has to go into one can be dry-run against it. A
+# child's role binding in its own namespace is the case that needs it.
+#
+#   1. Dry-run every Namespace in work/stages/namespaces. If any is refused,
+#      fail with none of them applied.
+#   2. Apply them all.
+#
+# Like the CRDs, these are applied before the rest is known to be valid. A
+# Namespace restarts nothing.
+#
+# Run-platform deploys only (ENVIRONMENT_TYPE=meta-env): nothing else brings
+# Namespaces, and validate-manifests fails any other deploy that holds one.
+set -euo pipefail
+
+if [[ "${ENVIRONMENT_TYPE:-}" != "meta-env" ]]; then
+  notify-error "Only a run-platform (meta-env) deploy applies Namespaces, this is ${ENVIRONMENT_TYPE:-unset}"
+  exit 1
+fi
+
+base="${RUN_BASE_PATH:-/kd}"
+namespaces_dir="${base}/work/stages/namespaces"
+audit_dir="${base}/work/audit"
+validation_dir="${audit_dir}/validation"
+apply_log="${audit_dir}/apply-namespaces.log"
+
+shopt -s globstar nullglob
+namespaces=("${namespaces_dir}"/**/*.yaml)
+shopt -u globstar nullglob
+
+if [[ ${#namespaces[@]} -eq 0 ]]; then
+  log "No Namespaces to apply"
+  exit 0
+fi
+
+mkdir -p "${validation_dir}"
+
+refused=()
+for namespace in "${namespaces[@]}"; do
+  relative="${namespace#"${base}/work/"}"
+  audit_file="${validation_dir}/${relative//\//_}"
+  audit_file="${audit_file%.yaml}.txt"
+
+  if ! k apply --dry-run=server --server-side --field-manager="kaptain/${ENVIRONMENT_TYPE}/${ENVIRONMENT:-}" -f "${namespace}" > "${audit_file}" 2>&1; then
+    refused+=("${namespace#"${namespaces_dir}/"}")
+  fi
+done
+
+if [[ ${#refused[@]} -gt 0 ]]; then
+  message="Namespaces refused by the cluster: ${#refused[@]}/${#namespaces[@]}, none applied"
+  for namespace in "${refused[@]}"; do
+    message+=$'\n'"  - ${namespace}"
+  done
+  message+=$'\n'"Inspect ${validation_dir}/stages_namespaces_*.txt"
+  notify-error "${message}"
+  exit 1
+fi
+
+if ! apply "${namespaces_dir}" > "${apply_log}" 2>&1; then
+  notify-error "Applying Namespaces failed - inspect ${apply_log}"
+  exit 1
+fi
+
+log "Namespaces applied: ${#namespaces[@]}"

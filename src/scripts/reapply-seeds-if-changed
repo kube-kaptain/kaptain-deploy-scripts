@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# A run-platform seeds each child environment marked seed-and-compare, and
+# afterwards leaves it alone unless something real about it has changed.
+#
+# One child at a time, each set in work/seed/<child>:
+#
+#   1. Keep any newer image tag the child is already running, so a reapply
+#      never rolls it back.
+#   2. Compare the set with the cluster.
+#   3. The same: leave it alone. Nothing is applied, so the child's control pod
+#      is not restarted for the sake of a new version label.
+#   4. Different, or not there yet: say so and apply the set in full.
+#
+# A different image tag alone is not a difference: the image auto-updater owns
+# the tag. A different registry, namespace or image name is.
+#
+# Applying a deployment-mode child's set restarts its control pod when the pod
+# template changed. A job-mode child has only a suspended CronJob, which
+# nothing restarts, so when the apply changed that CronJob's job template a
+# new deploy Job is started from it. Not on a first seeding, though: keelson
+# starts a new CronJob's first deploy itself.
+#
+# A child is job-mode when its set holds its deployer CronJob: the one named
+# plainly for the child, suspended, and carrying keelson annotations. Any other
+# CronJob in the set is one of the child's ordinary resources and plays no part
+# in this.
+#
+# A failure stops here, with the remaining children untouched.
+#
+# Run-platform deploys only (ENVIRONMENT_TYPE=meta-env).
+set -euo pipefail
+
+if [[ "${ENVIRONMENT_TYPE:-}" != "meta-env" ]]; then
+  notify-error "Only a run-platform (meta-env) deploy seeds child environments, this is ${ENVIRONMENT_TYPE:-unset}"
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=src/scripts/lib/reapply.bash
+source "${SCRIPT_DIR}/lib/reapply.bash"
+
+work="${RUN_BASE_PATH:-/kd}/work"
+seed_dir="${work}/seed"
+audit_dir="${work}/audit"
+
+# The file in a child's set that is its deployer CronJob. Nothing for a
+# deployment-mode child, which has none.
+deployer_cronjob_file() {
+  local child_dir="$1"
+  local child="$2"
+  local file
+  for file in "${child_dir}"/**/*.yaml; do
+    if is_deployer_cronjob "${file}" "${child}"; then
+      printf '%s' "${file}"
+      return 0
+    fi
+  done
+}
+
+shopt -s globstar nullglob
+for child_dir in "${seed_dir}"/*; do
+  [[ -d "${child_dir}" ]] || continue
+  child=$(basename "${child_dir}")
+  differences="${audit_dir}/compare/seed/${child}/differences"
+  apply_log="${audit_dir}/apply-seed-${child}.log"
+
+  keep-newer-image-tags "${child_dir}"
+  compare-set "${child_dir}"
+
+  if [[ ! -s "${differences}" ]]; then
+    log "The ${child} manifests match its resources"
+    continue
+  fi
+
+  # What happens next depends on the child. No deployer CronJob: deployment
+  # mode. One that is not in the cluster yet: job mode, seeded for the first
+  # time, and keelson starts that first deploy. One that is: job mode, and a
+  # change to it needs a Job started here.
+  start_job_if_changed=false
+  deployer=$(deployer_cronjob_file "${child_dir}" "${child}")
+  if [[ -z "${deployer}" ]]; then
+    consequence="this will cause a restart of the ${child} environment control pod."
+  else
+    before=$(live_workload_template "${deployer}")
+    if [[ -z "${before}" ]]; then
+      consequence="its CronJob is new to the cluster, so keelson will start its first deploy Job."
+    else
+      consequence="a new deploy Job will be started for ${child} from its updated CronJob."
+      start_job_if_changed=true
+    fi
+  fi
+
+  notify-info "The ${child} manifests differ from its resources ($(differences_summary "${differences}")). Reapplying in full - ${consequence}"
+
+  if ! apply "${child_dir}" > "${apply_log}" 2>&1; then
+    notify-error "Reapplying the ${child} manifests failed - inspect ${apply_log}"
+    exit 1
+  fi
+
+  [[ "${start_job_if_changed}" == "true" ]] || continue
+
+  after=$(live_workload_template "${deployer}")
+  if [[ "${before}" == "${after}" ]]; then
+    notify-info "Reapplied the ${child} manifests. Its CronJob did not change, so no new deploy Job was needed after all."
+    continue
+  fi
+
+  # The deployer CronJob is named for the child, so that is its name
+  job="${child}-reapply-$(date -u '+%s')"
+  if ! k create job --from="cronjob/${child}" "${job}" >> "${apply_log}" 2>&1; then
+    notify-error "Could not start Job ${job} from the ${child} CronJob - inspect ${apply_log}"
+    exit 1
+  fi
+  log "Started Job ${job} for ${child}"
+done
+shopt -u globstar nullglob

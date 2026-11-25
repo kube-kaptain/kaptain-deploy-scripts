@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Send a message with notify-info unless it is the same as the last one sent
+# for the same purpose. For whatever waits and reports as it does: said once,
+# a state that lasts a hundred polls is one message in the chat thread, not a
+# hundred.
+#
+#   notify-once <purpose> <message>
+#
+# A message that differs from the last one for its purpose, the first one
+# included, is sent.
+#
+# The same message again is not sent. A single "." goes to stdout in its place,
+# with no newline and no timestamp, so the console shows a row of dots for as
+# long as nothing changes.
+#
+# When a different message then arrives, the dots are ended with a newline and
+# "Prior message repeated N times over Ms" is sent ahead of it. N is how many
+# times the prior message was held back, M the seconds from when it was first
+# sent to now, when its successor arrived. A prior message that was never held
+# back gets no such line.
+#
+# Nothing is flushed at the end and nothing needs to be: whatever waits ends by
+# saying how it ended, through here, and that is a different message. Anything
+# else printed while dots are pending lands on the end of the row.
+#
+# The purpose names a dir, work/notify-once/<purpose>, so that each wait keeps
+# its own state and leaves its own record behind:
+#
+#   last                  the message last sent, as
+#                         <checksum>|<first sent>|<last seen>|<times held back>
+#   history               a line for each message that has been succeeded, as
+#                         <first sent>|<succeeded>|<times held back>|<checksum>
+#   messages/<checksum>   the text of each distinct message
+#
+# Times are seconds since the epoch.
+set -euo pipefail
+
+if [[ $# -ne 2 || -z "$1" || -z "$2" ]]; then
+  echo "Usage: notify-once <purpose> <message>" >&2
+  echo "Error: a purpose and a message are both required" >&2
+  exit 42
+fi
+
+purpose="$1"
+message="$2"
+
+if [[ ! "${purpose}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+  echo "Usage: notify-once <purpose> <message>" >&2
+  echo "Error: the purpose names a dir, so lower case letters and digits joined by hyphens only: ${purpose}" >&2
+  exit 42
+fi
+
+base="${RUN_BASE_PATH:-/kd}"
+state_dir="${base}/work/notify-once/${purpose}"
+last_file="${state_dir}/last"
+history_file="${state_dir}/history"
+messages_dir="${state_dir}/messages"
+
+mkdir -p "${messages_dir}"
+
+# sha256sum answers "<checksum>  -"
+checksum=$(printf '%s' "${message}" | sha256sum)
+checksum="${checksum%% *}"
+now=$(date -u '+%s')
+
+last_checksum=""
+first_sent=0
+held_back=0
+if [[ -f "${last_file}" ]]; then
+  IFS='|' read -r last_checksum first_sent _ held_back < "${last_file}"
+fi
+
+# The same again: a dot, and one more held back
+if [[ "${checksum}" == "${last_checksum}" ]]; then
+  printf '.'
+  printf '%s|%s|%s|%s\n' "${checksum}" "${first_sent}" "${now}" "$((held_back + 1))" > "${last_file}"
+  exit 0
+fi
+
+# A different one. The prior message is finished with first: its line in the
+# history, and if any of it was held back, the end of its dots and the count.
+if [[ -n "${last_checksum}" ]]; then
+  printf '%s|%s|%s|%s\n' "${first_sent}" "${now}" "${held_back}" "${last_checksum}" >> "${history_file}"
+  rm "${last_file}"
+
+  if [[ "${held_back}" -gt 0 ]]; then
+    times="times"
+    if [[ "${held_back}" -eq 1 ]]; then
+      times="time"
+    fi
+    printf '\n'
+    notify-info "Prior message repeated ${held_back} ${times} over $((now - first_sent))s"
+  fi
+fi
+
+notify-info "${message}"
+
+printf '%s\n' "${message}" > "${messages_dir}/${checksum}"
+printf '%s|%s|%s|%s\n' "${checksum}" "${now}" "${now}" "0" > "${last_file}"

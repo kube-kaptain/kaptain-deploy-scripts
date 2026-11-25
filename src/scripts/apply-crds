@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Kaptain contributors (Fred Cooke)
+#
+# Validate and apply the crds stage, ahead of the validation of everything else.
+#
+# A resource of a custom kind cannot be dry-run until its CRD is in the
+# cluster, so a tree that brings a CRD and a resource of that kind together
+# could never pass validate-manifests on its first deploy. So the CRDs go
+# first:
+#
+#   1. Dry-run every CRD in work/stages/crds. If any is refused, fail with
+#      none of them applied.
+#   2. Apply them all.
+#   3. Wait for them all to be Established, which is when the cluster starts
+#      serving their kinds. One round asks about each CRD that is not there
+#      yet, then pauses before the next round, so the API server is not
+#      hammered and a CRD that has answered is not asked about again. The
+#      whole wait is bounded by CRD_ESTABLISHED_WAIT.
+#
+# validate-manifests then runs over the whole tree as it always has.
+#
+# This is the one place something is applied before the rest is known to be
+# valid. If the rest then fails validation, these CRDs are already in.
+#
+# Run-platform deploys only (ENVIRONMENT_TYPE=meta-env): nothing else brings
+# CRDs, and validate-manifests fails any other deploy that holds one.
+set -euo pipefail
+
+if [[ "${ENVIRONMENT_TYPE:-}" != "meta-env" ]]; then
+  notify-error "Only a run-platform (meta-env) deploy applies CRDs, this is ${ENVIRONMENT_TYPE:-unset}"
+  exit 1
+fi
+
+base="${RUN_BASE_PATH:-/kd}"
+crds_dir="${base}/work/stages/crds"
+audit_dir="${base}/work/audit"
+validation_dir="${audit_dir}/validation"
+apply_log="${audit_dir}/apply-crds.log"
+
+# How long to wait for all the CRDs to be Established, in seconds, and how
+# long to pause between rounds of asking
+established_wait="${CRD_ESTABLISHED_WAIT:-60}"
+established_poll="${CRD_ESTABLISHED_POLL:-2}"
+
+shopt -s globstar nullglob
+crds=("${crds_dir}"/**/*.yaml)
+shopt -u globstar nullglob
+
+if [[ ${#crds[@]} -eq 0 ]]; then
+  log "No CRDs to apply"
+  exit 0
+fi
+
+mkdir -p "${validation_dir}"
+
+refused=()
+for crd in "${crds[@]}"; do
+  relative="${crd#"${base}/work/"}"
+  audit_file="${validation_dir}/${relative//\//_}"
+  audit_file="${audit_file%.yaml}.txt"
+
+  if ! k apply --dry-run=server --server-side --field-manager="kaptain/${ENVIRONMENT_TYPE}/${ENVIRONMENT:-}" -f "${crd}" > "${audit_file}" 2>&1; then
+    refused+=("${crd#"${crds_dir}/"}")
+  fi
+done
+
+if [[ ${#refused[@]} -gt 0 ]]; then
+  message="CRDs refused by the cluster: ${#refused[@]}/${#crds[@]}, none applied"
+  for crd in "${refused[@]}"; do
+    message+=$'\n'"  - ${crd}"
+  done
+  message+=$'\n'"Inspect ${validation_dir}/stages_crds_*.txt"
+  notify-error "${message}"
+  exit 1
+fi
+
+if ! apply "${crds_dir}" > "${apply_log}" 2>&1; then
+  notify-error "Applying CRDs failed - inspect ${apply_log}"
+  exit 1
+fi
+
+pending=()
+for crd in "${crds[@]}"; do
+  pending+=("$(yq '.metadata.name' "${crd}")")
+done
+
+deadline=$(( $(date -u '+%s') + established_wait ))
+while true; do
+  still_pending=()
+  for crd_name in "${pending[@]}"; do
+    # Empty until the cluster has set the condition at all
+    established=$(k get customresourcedefinition "${crd_name}" -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>> "${apply_log}" || true)
+    if [[ "${established}" != "True" ]]; then
+      still_pending+=("${crd_name}")
+    fi
+  done
+  pending=("${still_pending[@]}")
+
+  if [[ ${#pending[@]} -eq 0 ]]; then
+    break
+  fi
+
+  if [[ $(date -u '+%s') -ge ${deadline} ]]; then
+    message="CRDs applied but not Established within ${established_wait}s: ${#pending[@]}/${#crds[@]}"
+    for crd_name in "${pending[@]}"; do
+      message+=$'\n'"  - ${crd_name}"
+    done
+    message+=$'\n'"Inspect ${apply_log}"
+    notify-error "${message}"
+    exit 1
+  fi
+
+  sleep "${established_poll}"
+done
+
+log "CRDs applied and established: ${#crds[@]}"

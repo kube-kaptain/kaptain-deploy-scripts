@@ -72,6 +72,99 @@ teardown() {
   [[ "$output" == *"Validation failed"* ]]
 }
 
+# validate-manifests: only a run-platform may bring CRDs or Namespaces
+#
+# split-manifests puts every CRD it finds in the crds stage and every Namespace
+# in the namespaces stage, so on an environment deploy both stages have to be
+# empty. The build is meant to refuse them first; this is the second lock.
+
+write_staged_crd() {
+  local relative="$1"
+  local file="${TEST_RUN_BASE}/work/stages/crds/${relative}"
+  mkdir -p "$(dirname "${file}")"
+  printf 'apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: widgets.example.com\n' > "${file}"
+}
+
+write_staged_namespace() {
+  local relative="$1"
+  local file="${TEST_RUN_BASE}/work/stages/namespaces/${relative}"
+  mkdir -p "$(dirname "${file}")"
+  printf 'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: somewhere\n' > "${file}"
+}
+
+@test "validate-manifests fails an environment deploy that holds a Namespace" {
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_staged_namespace app-one/namespace.yaml
+  run validate-manifests
+  [ "$status" -eq 52 ]
+  [[ "$output" == *"Namespaces in a env deploy: 1"* ]]
+  [[ "$output" == *"Namespaces belong to the cluster, not to an environment. Only the run-platform manages them. Move them out of test-env and into the run-platform:"* ]]
+  [[ "$output" == *"  - app-one/namespace.yaml"* ]]
+}
+
+@test "validate-manifests lists every Namespace an environment deploy holds" {
+  write_staged_namespace app-one/namespace.yaml
+  write_staged_namespace app-two/nested/another.yaml
+  write_staged_namespace shared-namespace.yaml
+  run validate-manifests
+  [ "$status" -eq 52 ]
+  [[ "$output" == *"Namespaces in a env deploy: 3"* ]]
+  [[ "$output" == *"  - app-one/namespace.yaml"* ]]
+  [[ "$output" == *"  - app-two/nested/another.yaml"* ]]
+  [[ "$output" == *"  - shared-namespace.yaml"* ]]
+}
+
+@test "validate-manifests refuses an environment's Namespaces before asking the cluster anything" {
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_staged_namespace app-one/namespace.yaml
+  run validate-manifests
+  [ "$status" -eq 52 ]
+  [ ! -f "${TEST_RUN_BASE}/work/k-commands.log" ]
+}
+
+@test "validate-manifests lets a run-platform deploy hold Namespaces" {
+  export ENVIRONMENT_TYPE="meta-env"
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_staged_namespace run-env-a/namespace.yaml
+  run validate-manifests
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-manifests passes an environment deploy whose namespaces and crds stages are empty" {
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  mkdir -p "${TEST_RUN_BASE}/work/stages/namespaces" "${TEST_RUN_BASE}/work/stages/crds"
+  run validate-manifests
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-manifests fails an environment deploy that holds a CRD" {
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_staged_crd app-one/widget-crd.yaml
+  run validate-manifests
+  [ "$status" -eq 52 ]
+  [[ "$output" == *"CRDs in a env deploy: 1"* ]]
+  [[ "$output" == *"CRDs belong to the cluster, not to an environment. Only the run-platform manages them. Move them out of test-env and into the run-platform:"* ]]
+  [[ "$output" == *"  - app-one/widget-crd.yaml"* ]]
+  [ ! -f "${TEST_RUN_BASE}/work/k-commands.log" ]
+}
+
+@test "validate-manifests reports an environment's CRDs and its Namespaces together" {
+  write_staged_crd app-one/widget-crd.yaml
+  write_staged_namespace app-one/namespace.yaml
+  run validate-manifests
+  [ "$status" -eq 52 ]
+  [[ "$output" == *"CRDs in a env deploy: 1"* ]]
+  [[ "$output" == *"Namespaces in a env deploy: 1"* ]]
+}
+
+@test "validate-manifests lets a run-platform deploy hold CRDs" {
+  export ENVIRONMENT_TYPE="meta-env"
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_staged_crd app-one/widget-crd.yaml
+  run validate-manifests
+  [ "$status" -eq 0 ]
+}
+
 # validate-manifests kind pre-check tests
 #
 # An unresolvable kind makes kubectl throw away its discovery cache and refetch
@@ -174,13 +267,13 @@ YAML
   [ "${calls}" -eq 2 ]
 }
 
-@test "validate-manifests pre-checks held-back sets too" {
+@test "validate-manifests pre-checks a run-platform's child sets within the tree" {
   export ENVIRONMENT_TYPE="meta-env"
-  write_manifest "${TEST_RUN_BASE}/work/self/own-thing.yaml" v1 ConfigMap
-  write_manifest "${TEST_RUN_BASE}/work/seed/run-env-a/widget.yaml" example.com/v1 Widget
+  write_manifest "${TEST_RUN_BASE}/work/manifests/run-platform-own/own-thing.yaml" v1 ConfigMap
+  write_manifest "${TEST_RUN_BASE}/work/manifests/run-env-a/widget.yaml" example.com/v1 Widget
   run validate-manifests
   [ "$status" -eq 50 ]
-  [[ "$output" == *"seed/run-env-a/widget.yaml: example.com/v1 Widget"* ]]
+  [[ "$output" == *"manifests/run-env-a/widget.yaml: example.com/v1 Widget"* ]]
 }
 
 @test "validate-manifests leaves a document with no kind to the dry-run" {
@@ -306,19 +399,20 @@ YAML
   [ "$status" -eq 0 ]
 }
 
-@test "validate-manifests checks held-back sets for shape too" {
+@test "validate-manifests checks a run-platform's child sets for shape within the tree" {
   export ENVIRONMENT_TYPE="meta-env"
-  write_manifest "${TEST_RUN_BASE}/work/self/own-thing.yaml" v1 ConfigMap
-  write_manifest "${TEST_RUN_BASE}/work/seed/run-env-a/child.yml" v1 ConfigMap
+  write_manifest "${TEST_RUN_BASE}/work/manifests/run-platform-own/own-thing.yaml" v1 ConfigMap
+  write_manifest "${TEST_RUN_BASE}/work/manifests/run-env-a/child.yml" v1 ConfigMap
   run validate-manifests
   [ "$status" -eq 51 ]
-  [[ "$output" == *"seed/run-env-a/child.yml"* ]]
+  [[ "$output" == *"manifests/run-env-a/child.yml"* ]]
 }
 
-# validate-manifests tests for the sets split-manifests holds back
+# validate-manifests reads the complete tree and nothing else
 #
-# A run-platform's own set and its seed-and-compare children are applied by
-# hand later, so a deploy validates them while a cluster is there to do it.
+# split-manifests copies every file out of work/manifests into the dir of the
+# step that applies it. Those dirs hold nothing the tree does not, so the tree
+# is validated once and the copies are never read here, on any kind of deploy.
 
 write_set_manifest() {
   local dir="$1"
@@ -327,100 +421,125 @@ write_set_manifest() {
   printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n' "${name}" > "${dir}/${name}.yaml"
 }
 
-@test "validate-manifests validates the run-platform's own set" {
+@test "validate-manifests validates a run-platform's own and child sets as part of the tree" {
   export ENVIRONMENT_TYPE="meta-env"
   cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
-  write_set_manifest "${TEST_RUN_BASE}/work/self" own-thing
+  write_set_manifest "${TEST_RUN_BASE}/work/manifests/run-platform-own" own-thing
+  write_set_manifest "${TEST_RUN_BASE}/work/manifests/run-env-a" child-a
+  write_set_manifest "${TEST_RUN_BASE}/work/manifests/run-env-b" child-b
   run validate-manifests
   [ "$status" -eq 0 ]
-  grep -q -- "-f ${TEST_RUN_BASE}/work/self/own-thing.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q -- "-f ${TEST_RUN_BASE}/work/manifests/run-platform-own/own-thing.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q -- "-f ${TEST_RUN_BASE}/work/manifests/run-env-a/child-a.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q -- "-f ${TEST_RUN_BASE}/work/manifests/run-env-b/child-b.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
 }
 
-@test "validate-manifests validates every seeded child set" {
+@test "validate-manifests validates nested files within a child set" {
   export ENVIRONMENT_TYPE="meta-env"
-  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
-  write_set_manifest "${TEST_RUN_BASE}/work/self" own-thing
-  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a" child-a
-  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-b" child-b
+  write_set_manifest "${TEST_RUN_BASE}/work/manifests/run-env-a/nested/deeper" buried
   run validate-manifests
   [ "$status" -eq 0 ]
-  grep -q -- "-f ${TEST_RUN_BASE}/work/seed/run-env-a/child-a.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
-  grep -q -- "-f ${TEST_RUN_BASE}/work/seed/run-env-b/child-b.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
+  grep -q -- "-f ${TEST_RUN_BASE}/work/manifests/run-env-a/nested/deeper/buried.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
 }
 
-@test "validate-manifests validates nested files within a seeded child set" {
+@test "validate-manifests does not read the split dirs on a run-platform deploy" {
   export ENVIRONMENT_TYPE="meta-env"
-  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a/nested/deeper" buried
-  run validate-manifests
-  [ "$status" -eq 0 ]
-  grep -q -- "-f ${TEST_RUN_BASE}/work/seed/run-env-a/nested/deeper/buried.yaml" "${TEST_RUN_BASE}/work/k-commands.log"
-}
-
-@test "validate-manifests ignores held-back sets on an environment deploy" {
   cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
   write_set_manifest "${TEST_RUN_BASE}/work/self" own-thing
   write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a" child-a
+  write_set_manifest "${TEST_RUN_BASE}/work/stages/deploy" staged
   run validate-manifests
   [ "$status" -eq 0 ]
-  ! grep -q "work/self/" "${TEST_RUN_BASE}/work/k-commands.log"
-  ! grep -q "work/seed/" "${TEST_RUN_BASE}/work/k-commands.log"
+  run grep -E "work/(self|seed|stages)/" "${TEST_RUN_BASE}/work/k-commands.log"
+  [ "$status" -eq 1 ]
 }
 
-@test "validate-manifests passes with only a held-back set to validate" {
+@test "validate-manifests does not read the split dirs on an environment deploy" {
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  write_set_manifest "${TEST_RUN_BASE}/work/self" own-thing
+  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a" child-a
+  write_set_manifest "${TEST_RUN_BASE}/work/stages/deploy" staged
+  run validate-manifests
+  [ "$status" -eq 0 ]
+  run grep -E "work/(self|seed|stages)/" "${TEST_RUN_BASE}/work/k-commands.log"
+  [ "$status" -eq 1 ]
+}
+
+@test "validate-manifests fails with an empty tree even when a split dir holds manifests" {
   export ENVIRONMENT_TYPE="meta-env"
   write_set_manifest "${TEST_RUN_BASE}/work/self" own-thing
+  write_set_manifest "${TEST_RUN_BASE}/work/stages/deploy" staged
   run validate-manifests
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"Validated 1 files"* ]]
+  [ "$status" -eq 43 ]
+  [[ "$output" == *"No manifest files"* ]]
 }
 
-@test "validate-manifests keeps audit files from different sets apart" {
+@test "validate-manifests keeps audit files from different child sets apart" {
   export ENVIRONMENT_TYPE="meta-env"
   write_set_manifest "${TEST_RUN_BASE}/work/manifests" same-name
-  write_set_manifest "${TEST_RUN_BASE}/work/self" same-name
-  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a" same-name
+  write_set_manifest "${TEST_RUN_BASE}/work/manifests/run-platform-own" same-name
+  write_set_manifest "${TEST_RUN_BASE}/work/manifests/run-env-a" same-name
   run validate-manifests
   [ "$status" -eq 0 ]
   [ -f "${TEST_RUN_BASE}/work/audit/validation/manifests_same-name.txt" ]
-  [ -f "${TEST_RUN_BASE}/work/audit/validation/self_same-name.txt" ]
-  [ -f "${TEST_RUN_BASE}/work/audit/validation/seed_run-env-a_same-name.txt" ]
+  [ -f "${TEST_RUN_BASE}/work/audit/validation/manifests_run-platform-own_same-name.txt" ]
+  [ -f "${TEST_RUN_BASE}/work/audit/validation/manifests_run-env-a_same-name.txt" ]
 }
 
-@test "validate-manifests names the set when a held-back manifest fails" {
+@test "validate-manifests names the child set when one of its manifests fails" {
   export ENVIRONMENT_TYPE="meta-env"
-  write_set_manifest "${TEST_RUN_BASE}/work/seed/run-env-a" child-a
+  write_set_manifest "${TEST_RUN_BASE}/work/manifests/run-env-a" child-a
   install_mock_k_failing_dry_run
 
   run validate-manifests
   [ "$status" -ne 0 ]
-  [[ "$output" == *"seed/run-env-a/child-a.yaml"* ]]
+  [[ "$output" == *"manifests/run-env-a/child-a.yaml"* ]]
 }
 
 # apply-manifests tests
+#
+# It applies the deploy stage, which split-manifests fills from the complete
+# tree, and never the tree itself: on a run-platform that would apply its own
+# set and its seeded children too.
+
+stage_fixture_manifests() {
+  mkdir -p "${TEST_RUN_BASE}/work/stages/deploy"
+  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/stages/deploy/"
+}
 
 @test "apply-manifests calls k apply" {
-  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  stage_fixture_manifests
   run apply-manifests
   [ "$status" -eq 0 ]
   grep -q "apply --server-side --field-manager=kaptain/env/test-env -R -f" "${TEST_RUN_BASE}/work/k-commands.log"
 }
 
-@test "apply-manifests creates audit log" {
+@test "apply-manifests applies the deploy stage, not the complete tree" {
+  stage_fixture_manifests
   cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  run apply-manifests
+  [ "$status" -eq 0 ]
+  grep -q -- "-R -f ${TEST_RUN_BASE}/work/stages/deploy/" "${TEST_RUN_BASE}/work/k-commands.log"
+  run grep -- "-f ${TEST_RUN_BASE}/work/manifests" "${TEST_RUN_BASE}/work/k-commands.log"
+  [ "$status" -eq 1 ]
+}
+
+@test "apply-manifests creates audit log" {
+  stage_fixture_manifests
   run apply-manifests
   [ "$status" -eq 0 ]
   [ -f "${TEST_RUN_BASE}/work/audit/apply.log" ]
 }
 
 @test "apply-manifests notifies on success" {
-  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  stage_fixture_manifests
   run apply-manifests
   [ "$status" -eq 0 ]
   [[ "$output" == *"Manifests applied"* ]]
 }
 
 @test "apply-manifests reports failure" {
-  cp "${TEST_RUN_BASE}/manifests/"* "${TEST_RUN_BASE}/work/manifests/"
+  stage_fixture_manifests
   cat > "${TEST_MOCK_BIN}/k" << 'MOCK'
 #!/usr/bin/env bash
 echo "$@" >> "${RUN_BASE_PATH}/work/k-commands.log"

@@ -609,6 +609,54 @@ ERROR: Environment not stable:
   grep -qF "Job background is annotated kaptain.org/main-deploy-job-wait: \"false\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
 }
 
+@test "monitor-environment waits for no Job that does not say otherwise when MAIN_DEPLOY_JOB_WAIT is false, and still watches the workloads" {
+  export MAIN_DEPLOY_JOB_WAIT=false
+  declared Deployment api
+  new_job import
+  new_job migrate
+  from_round 1
+  controller_says Deployment api 3 2 2 1
+  job_is import Failed
+  job_is migrate running
+  from_round 2
+  controller_says Deployment api 3 3 3 3
+  job_is import Failed
+  job_is migrate running
+  run monitor-environment
+  [ "$status" -eq 0 ]
+  [ "$(sed -n 2,4p "${SENT}")" = "INFO: Environment current state:
+  api deployment desires 3, has 2 pods, of which 1 is ready
+INFO: Environment declared stable!" ]
+  grep -qF "MAIN_DEPLOY_JOB_WAIT is false and Job import is not annotated kaptain.org/main-deploy-job-wait: \"true\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
+  grep -qF "MAIN_DEPLOY_JOB_WAIT is false and Job migrate is not annotated kaptain.org/main-deploy-job-wait: \"true\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
+}
+
+@test "monitor-environment still waits for the one Job annotated true when MAIN_DEPLOY_JOB_WAIT is false" {
+  export MAIN_DEPLOY_JOB_WAIT=false
+  new_job import
+  JOB_WAIT=true new_job migrate
+  from_round 1
+  job_is import Failed
+  job_is migrate running
+  from_round 2
+  job_is import Failed
+  job_is migrate Complete
+  run monitor-environment
+  [ "$status" -eq 0 ]
+  [ "$(sed -n 2,4p "${SENT}")" = "INFO: Environment current state:
+  migrate job is still running
+INFO: Environment declared stable!" ]
+}
+
+@test "monitor-environment fails on a failed Job annotated true even when MAIN_DEPLOY_JOB_WAIT is false" {
+  export MAIN_DEPLOY_JOB_WAIT=false
+  JOB_WAIT=true new_job import
+  job_is import Failed
+  run monitor-environment
+  [ "$status" -eq 63 ]
+  [[ "$output" == *"import job has failed and exhausted retries"* ]]
+}
+
 @test "monitor-environment does not wait for a Job the cluster had before this deploy" {
   job_is old-migrate Failed
   run monitor-environment

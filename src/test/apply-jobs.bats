@@ -29,8 +29,9 @@ teardown() {
 
 # A Job in a stage: the stage, where in it, its name. It is new to the cluster,
 # so in the baseline's new-jobs, unless JOB_WAS_THERE=true is in front.
-# JOB_SUSPENDED=true makes it a suspended one and JOB_WAIT=<value> sets the
-# annotation that says whether a postdeploy Job is waited for.
+# JOB_SUSPENDED=true makes it a suspended one. JOB_WAIT=<value> sets the
+# annotation that says whether a Job of its stage is waited for, or with
+# JOB_WAIT_ANNOTATION=<name> an annotation of that name instead.
 stage_job() {
   local stage="$1"
   local relative="$2"
@@ -40,7 +41,7 @@ stage_job() {
   {
     printf 'apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: %s\n' "${name}"
     if [[ -n "${JOB_WAIT:-}" ]]; then
-      printf '  annotations:\n    kaptain.org/post-deploy-job-wait: "%s"\n' "${JOB_WAIT}"
+      printf '  annotations:\n    %s: "%s"\n' "${JOB_WAIT_ANNOTATION:-kaptain.org/${stage}-job-wait}" "${JOB_WAIT}"
     fi
     printf 'spec:\n'
     if [[ "${JOB_SUSPENDED:-false}" == "true" ]]; then
@@ -280,7 +281,7 @@ INFO: The postdeploy jobs have finished: 1 waited for" ]
   [[ "$output" == *"ERROR: The postdeploy job announce failed"* ]]
 }
 
-@test "apply-jobs does not wait for a postdeploy Job annotated kaptain.org/post-deploy-job-wait false, even one that fails" {
+@test "apply-jobs does not wait for a postdeploy Job annotated kaptain.org/postdeploy-job-wait false, even one that fails" {
   JOB_WAIT=false stage_job postdeploy postdeploy-job-announce.yaml announce
   stage_job postdeploy postdeploy-job-warm.yaml warm
   job_ends "${POSTDEPLOY}/postdeploy-job-announce.yaml" Failed
@@ -289,12 +290,109 @@ INFO: The postdeploy jobs have finished: 1 waited for" ]
   [ "$status" -eq 0 ]
   run grep -- "^get -f ${POSTDEPLOY}/postdeploy-job-announce.yaml" "${K_LOG}"
   [ "$status" -eq 1 ]
-  grep -qF "Job announce is annotated kaptain.org/post-deploy-job-wait: \"false\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
+  grep -qF "Job announce is annotated kaptain.org/postdeploy-job-wait: \"false\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
   [ "$(<"${SENT}")" = "INFO: The postdeploy jobs have finished: 1 waited for" ]
 }
 
-@test "apply-jobs takes no notice of that annotation on a prerequisite Job" {
-  JOB_WAIT=false stage_job prerequisite prerequisite-job-migrate.yaml migrate
+@test "apply-jobs does not wait for a prerequisite Job annotated kaptain.org/prerequisite-job-wait false, even one that fails" {
+  JOB_WAIT=false stage_job prerequisite prerequisite-job-warm.yaml warm
+  stage_job prerequisite prerequisite-job-migrate.yaml migrate
+  job_ends "${PREREQUISITE}/prerequisite-job-warm.yaml" Failed
+  job_ends "${PREREQUISITE}/prerequisite-job-migrate.yaml" Complete
+  run apply-jobs prerequisite
+  [ "$status" -eq 0 ]
+  grep -q -- "^apply " "${K_LOG}"
+  run grep -- "^get -f ${PREREQUISITE}/prerequisite-job-warm.yaml" "${K_LOG}"
+  [ "$status" -eq 1 ]
+  grep -qF "Job warm is annotated kaptain.org/prerequisite-job-wait: \"false\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
+  [ "$(<"${SENT}")" = "INFO: The prerequisite jobs have finished: 1 waited for" ]
+}
+
+@test "apply-jobs takes each stage's annotation for that stage only" {
+  JOB_WAIT=false JOB_WAIT_ANNOTATION=kaptain.org/postdeploy-job-wait stage_job prerequisite prerequisite-job-migrate.yaml migrate
+  JOB_WAIT=false JOB_WAIT_ANNOTATION=kaptain.org/prerequisite-job-wait stage_job postdeploy postdeploy-job-announce.yaml announce
+  job_ends "${PREREQUISITE}/prerequisite-job-migrate.yaml" Failed
+  job_ends "${POSTDEPLOY}/postdeploy-job-announce.yaml" Failed
+  run apply-jobs prerequisite
+  [ "$status" -eq 61 ]
+  run apply-jobs postdeploy
+  [ "$status" -eq 61 ]
+}
+
+@test "apply-jobs waits for no prerequisite Job that does not say otherwise when PREREQUISITE_JOB_WAIT is false, and still applies them" {
+  export PREREQUISITE_JOB_WAIT=false
+  stage_job prerequisite prerequisite-job-first.yaml first
+  stage_job prerequisite prerequisite-job-second.yaml second
+  job_ends "${PREREQUISITE}/prerequisite-job-first.yaml" Failed
+  run apply-jobs prerequisite
+  [ "$status" -eq 0 ]
+  grep -qxF -- "apply --server-side --field-manager=kaptain/env/run-test-env -R -f ${PREREQUISITE}" "${K_LOG}"
+  run grep -- "^get " "${K_LOG}"
+  [ "$status" -eq 1 ]
+  grep -qF "PREREQUISITE_JOB_WAIT is false and Job first is not annotated kaptain.org/prerequisite-job-wait: \"true\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
+  grep -qF "PREREQUISITE_JOB_WAIT is false and Job second is not annotated kaptain.org/prerequisite-job-wait: \"true\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
+  [ ! -e "${SENT}" ]
+}
+
+@test "apply-jobs waits for no postdeploy Job that does not say otherwise when POSTDEPLOY_JOB_WAIT is false, and still applies them" {
+  export POSTDEPLOY_JOB_WAIT=false
+  stage_job postdeploy postdeploy-job-announce.yaml announce
+  stage_job postdeploy postdeploy-job-warm.yaml warm
+  job_ends "${POSTDEPLOY}/postdeploy-job-announce.yaml" Failed
+  run apply-jobs postdeploy
+  [ "$status" -eq 0 ]
+  grep -qxF -- "apply --server-side --field-manager=kaptain/env/run-test-env -R -f ${POSTDEPLOY}" "${K_LOG}"
+  run grep -- "^get " "${K_LOG}"
+  [ "$status" -eq 1 ]
+  grep -qF "POSTDEPLOY_JOB_WAIT is false and Job announce is not annotated kaptain.org/postdeploy-job-wait: \"true\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
+  grep -qF "POSTDEPLOY_JOB_WAIT is false and Job warm is not annotated kaptain.org/postdeploy-job-wait: \"true\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
+  [ ! -e "${SENT}" ]
+}
+
+@test "apply-jobs still waits for the one prerequisite Job annotated true when PREREQUISITE_JOB_WAIT is false" {
+  export PREREQUISITE_JOB_WAIT=false
+  stage_job prerequisite prerequisite-job-bad-one.yaml bad-one
+  stage_job prerequisite prerequisite-job-bad-two.yaml bad-two
+  JOB_WAIT=true stage_job prerequisite prerequisite-job-good.yaml good
+  job_ends "${PREREQUISITE}/prerequisite-job-bad-one.yaml" Failed
+  job_ends "${PREREQUISITE}/prerequisite-job-bad-two.yaml" Failed
+  job_ends "${PREREQUISITE}/prerequisite-job-good.yaml" Complete 1
+  run apply-jobs prerequisite
+  [ "$status" -eq 0 ]
+  [ "$(<"${SENT}")" = "INFO: Waiting for 1 prerequisite job(s): good
+INFO: The prerequisite jobs have finished: 1 waited for" ]
+  run grep -- "^get -f ${PREREQUISITE}/prerequisite-job-bad" "${K_LOG}"
+  [ "$status" -eq 1 ]
+}
+
+@test "apply-jobs fails on a failed postdeploy Job annotated true even when POSTDEPLOY_JOB_WAIT is false" {
+  export POSTDEPLOY_JOB_WAIT=false
+  stage_job postdeploy postdeploy-job-bad.yaml bad
+  JOB_WAIT=true stage_job postdeploy postdeploy-job-good.yaml good
+  job_ends "${POSTDEPLOY}/postdeploy-job-bad.yaml" Failed
+  job_ends "${POSTDEPLOY}/postdeploy-job-good.yaml" Failed
+  run apply-jobs postdeploy
+  [ "$status" -eq 61 ]
+  [[ "$output" == *"ERROR: The postdeploy job good failed"* ]]
+}
+
+@test "apply-jobs does not wait for a Job annotated false even when its stage waits by default" {
+  export PREREQUISITE_JOB_WAIT=true
+  JOB_WAIT=false stage_job prerequisite prerequisite-job-bad.yaml bad
+  job_ends "${PREREQUISITE}/prerequisite-job-bad.yaml" Failed
+  run apply-jobs prerequisite
+  [ "$status" -eq 0 ]
+}
+
+@test "apply-jobs takes each stage's switch for that stage only" {
+  export PREREQUISITE_JOB_WAIT=false
+  stage_job postdeploy postdeploy-job-announce.yaml announce
+  job_ends "${POSTDEPLOY}/postdeploy-job-announce.yaml" Failed
+  run apply-jobs postdeploy
+  [ "$status" -eq 61 ]
+  unset PREREQUISITE_JOB_WAIT
+  export POSTDEPLOY_JOB_WAIT=false
+  stage_job prerequisite prerequisite-job-migrate.yaml migrate
   job_ends "${PREREQUISITE}/prerequisite-job-migrate.yaml" Failed
   run apply-jobs prerequisite
   [ "$status" -eq 61 ]

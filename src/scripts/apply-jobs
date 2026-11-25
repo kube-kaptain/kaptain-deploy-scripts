@@ -15,8 +15,20 @@
 #     about, whatever became of it. Applying it again changes nothing and it
 #     does not run again.
 #   - Not a suspended Job (spec.suspend: true). It would never finish.
-#   - Not a postdeploy Job annotated kaptain.org/post-deploy-job-wait: "false".
-#     The default is to wait.
+#   - A Job's own annotation decides, where it has one:
+#     kaptain.org/prerequisite-job-wait on a prerequisite Job,
+#     kaptain.org/postdeploy-job-wait on a postdeploy one. "false" is not
+#     waited for and "true" is. A Job that is not waited for does not hold the
+#     deploy up, and its failing does not fail it.
+#   - A Job with no such annotation follows PREREQUISITE_JOB_WAIT or
+#     POSTDEPLOY_JOB_WAIT, which wait unless they are false. Set false in an
+#     environment, that turns the waiting off for every Job of the stage that
+#     does not say "true" for itself: silence the bad ones for a while and
+#     keep waiting for a good one.
+#
+# The annotation and the variable are both named for the stage, as the files
+# are: prerequisite-job*.yaml, kaptain.org/prerequisite-job-wait,
+# PREREQUISITE_JOB_WAIT.
 #
 # All the Jobs waited for are waited for together. Each round asks about every
 # one still running, then pauses. The pause starts at JOB_WAIT_POLL seconds and
@@ -63,10 +75,16 @@ wait_poll="${JOB_WAIT_POLL:-5}"
 wait_poll_double_after="${JOB_WAIT_POLL_DOUBLE_AFTER:-60}"
 wait_poll_doubles="${JOB_WAIT_POLL_DOUBLES:-3}"
 
+# The annotation that says whether a Job of this stage is waited for, and the
+# variable that says whether any Job of this stage is waited for at all
+wait_annotation="kaptain.org/${stage}-job-wait"
+wait_variable="${stage^^}_JOB_WAIT"
+wait_for_any="${!wait_variable:-true}"
+
 # One line for each manifest in the stage:
-# <file>|<kind>|<name>|<suspended>|<wait annotation, true unless it says otherwise>
+# <file>|<kind>|<name>|<suspended>|<wait annotation, empty if it has none>
 # shellcheck disable=SC2016 # A yq expression, not shell
-JOBS='[filename, .kind // "", .metadata.name // "", .spec.suspend // false, .metadata.annotations["kaptain.org/post-deploy-job-wait"] // "true"] | join("|")'
+JOBS='[filename, .kind // "", .metadata.name // "", .spec.suspend // false, .metadata.annotations["'"${wait_annotation}"'"] // ""] | join("|")'
 
 # The condition that says a Job has ended, Complete or Failed, if it has one
 # shellcheck disable=SC2016 # A yq expression, not shell
@@ -112,8 +130,13 @@ while IFS='|' read -r manifest kind name suspended wait_for; do
     log "Job ${name} was in the cluster before this deploy, not waiting for it"
   elif [[ "${suspended}" == "true" ]]; then
     log "Job ${name} is suspended, not waiting for it"
-  elif [[ "${stage}" == "postdeploy" && "${wait_for}" == "false" ]]; then
-    log "Job ${name} is annotated kaptain.org/post-deploy-job-wait: \"false\", not waiting for it"
+  elif [[ "${wait_for}" == "false" ]]; then
+    log "Job ${name} is annotated ${wait_annotation}: \"false\", not waiting for it"
+  elif [[ "${wait_for}" == "true" ]]; then
+    # Its own word for it, whatever the stage as a whole is set to
+    waiting+=("${name}|${relative}")
+  elif [[ "${wait_for_any}" == "false" ]]; then
+    log "${wait_variable} is false and Job ${name} is not annotated ${wait_annotation}: \"true\", not waiting for it"
   else
     waiting+=("${name}|${relative}")
   fi

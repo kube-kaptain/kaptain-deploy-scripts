@@ -34,7 +34,11 @@
 # A Job is waited for until it is Complete, if this deploy brought it (it is in
 # the baseline's new-jobs), unless it is a prerequisite or postdeploy Job,
 # which apply-jobs waits for, or suspended, or annotated
-# kaptain.org/main-deploy-job-wait: "false".
+# kaptain.org/main-deploy-job-wait: "false". One with no such annotation
+# follows MAIN_DEPLOY_JOB_WAIT, which waits unless it is false, and one
+# annotated "true" is waited for whatever that says. Set false in an
+# environment, it silences the bad ones for a while and keeps waiting for a
+# good one, as PREREQUISITE_JOB_WAIT and POSTDEPLOY_JOB_WAIT do for theirs.
 #
 # Two things cannot get better, and end the wait at once. Exit 63.
 #
@@ -102,9 +106,9 @@ poll_doubles="${MONITOR_ENVIRONMENT_POLL_DOUBLES:-3}"
 # shellcheck disable=SC2016 # A yq expression, not shell
 DECLARED_WORKLOAD='[.kind // "", .metadata.name // "", ('"${POD_TEMPLATES}"' | .[0].metadata.labels.app // ""), ('"${POD_TEMPLATES}"' | .[0].metadata.labels["app.kubernetes.io/name"] // "")] | join("|")'
 
-# A declared Job, as <name>|<suspended>|<wait annotation, true unless it says otherwise>
+# A declared Job, as <name>|<suspended>|<wait annotation, empty if it has none>
 # shellcheck disable=SC2016 # A yq expression, not shell
-DECLARED_JOB='[.metadata.name // "", .spec.suspend // false, .metadata.annotations["kaptain.org/main-deploy-job-wait"] // "true"] | join("|")'
+DECLARED_JOB='[.metadata.name // "", .spec.suspend // false, .metadata.annotations["kaptain.org/main-deploy-job-wait"] // ""] | join("|")'
 
 # The cluster's answer, as one line for each thing in it:
 #
@@ -245,6 +249,11 @@ if [[ ${#job_manifests[@]} -gt 0 ]]; then
       log "Job ${name} is suspended, not waiting for it"
     elif [[ "${wait_for}" == "false" ]]; then
       log "Job ${name} is annotated kaptain.org/main-deploy-job-wait: \"false\", not waiting for it"
+    elif [[ "${wait_for}" == "true" ]]; then
+      # Its own word for it, whatever the environment as a whole is set to
+      jobs_watched+=("${name}")
+    elif [[ "${MAIN_DEPLOY_JOB_WAIT:-true}" == "false" ]]; then
+      log "MAIN_DEPLOY_JOB_WAIT is false and Job ${name} is not annotated kaptain.org/main-deploy-job-wait: \"true\", not waiting for it"
     else
       jobs_watched+=("${name}")
     fi

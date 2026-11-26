@@ -535,7 +535,17 @@ stage_fixture_manifests() {
   stage_fixture_manifests
   run apply-manifests
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Manifests applied"* ]]
+  [[ "$output" =~ Main\ deploy\ performed\ in\ [0-9]+\ seconds?\. ]]
+}
+
+@test "apply-manifests records when the main deploy began" {
+  stage_fixture_manifests
+  install_mock_clock
+  clock_reads 1234
+  run apply-manifests
+  [ "$status" -eq 0 ]
+  [ "$(<"${TEST_RUN_BASE}/work/main-deploy-began")" = "1234" ]
+  [[ "$output" == *"Main deploy performed in 0 seconds."* ]]
 }
 
 @test "apply-manifests reports failure" {

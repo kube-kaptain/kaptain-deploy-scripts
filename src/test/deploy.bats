@@ -223,7 +223,7 @@ line_of() {
   write_own_workload Deployment "${TEST_RUN_BASE}/previous-deployment.yaml" run-platform-own-aaaaa
   cluster_holds "${SELF_SET}/deployment.yaml" "${TEST_RUN_BASE}/previous-deployment.yaml"
   run deploy
-  [[ "$output" == *"Waiting up to 600s to be replaced by a pod running the reapplied manifests"* ]]
+  [[ "$output" == *"Waiting up to 600 seconds to be replaced by an up-to-date pod from our reapplied manifests"* ]]
   [[ "$output" != *"Deployment complete"* ]]
   grep -q -- "-R -f ${SELF_SET}" "${K_LOG}"
   run grep -- "-R -f ${STAGED}/" "${K_LOG}"
@@ -715,7 +715,7 @@ job_among_the_fixtures() {
   run deploy
   [ "$status" -eq 0 ]
   [[ "$output" == *"Starting stability check for 'run-test-env' with timeout of 600 seconds"* ]]
-  [[ "$output" == *"Environment declared stable!"* ]]
+  [[ "$output" == *"Environment declared stable "*" after main deploy began!"* ]]
   [[ "$output" == *"Deployment complete"* ]]
 }
 
@@ -833,7 +833,7 @@ MOCK
   install_mock_interruptible_sleep_killer  # Need killer to break infinite loop
   export DEPLOY_MODE="deployment"
   run deploy
-  [[ "$output" == *"sleeping forever"* ]]
+  [[ "$output" == *"Deployment complete - sleeping forever to allow operator access..."* ]]
 }
 
 @test "deploy in job mode on error sleeps POST_DEPLOY_SLEEP_FAILURE before exit" {

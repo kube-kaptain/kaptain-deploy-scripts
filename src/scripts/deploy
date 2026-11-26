@@ -276,7 +276,7 @@ if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
       # does the deploy. This one must not, and it must not exit either: the
       # container would restart in the same pod, still on the old config.
       change_phase false "Waiting to be replaced"
-      notify-info "Waiting up to ${SELF_REPLACEMENT_WAIT}s to be replaced by a pod running the reapplied manifests"
+      notify-info "Waiting up to ${SELF_REPLACEMENT_WAIT} seconds to be replaced by an up-to-date pod from our reapplied manifests"
       interruptible_sleep "${SELF_REPLACEMENT_WAIT}"
       notify-error "Reapplied our own manifests ${SELF_REPLACEMENT_WAIT}s ago and this pod has not been replaced - the new pod is probably failing to start"
       replacement_never_came
@@ -344,7 +344,7 @@ change_phase false "Complete"
 # Sleep behavior depends on DEPLOY_MODE
 # shellcheck disable=SC2154 # DEPLOY_MODE set by environment, validated by validate-environment
 if [[ "${DEPLOY_MODE}" == "deployment" ]]; then
-  notify-info "Deployment complete - sleeping forever..."
+  notify-info "Deployment complete - sleeping forever to allow operator access..."
   while true; do interruptible_sleep 3600; done
 else
   notify-info "Deployment complete - sleeping ${POST_DEPLOY_SLEEP_SUCCESS}s before exit..."

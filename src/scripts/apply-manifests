@@ -6,6 +6,9 @@
 # Applies work/stages/deploy, which split-manifests fills from the complete
 # tree: everything except a run-platform's own set and its seeded children.
 # Output captured to audit log for inspection if needed.
+#
+# Writes when it began, in seconds since the epoch, to work/main-deploy-began:
+# monitor-environment says how long after that the environment was stable.
 set -euo pipefail
 
 base="${RUN_BASE_PATH:-/kd}"
@@ -13,8 +16,16 @@ deploy_dir="${base}/work/stages/deploy"
 audit_dir="${base}/work/audit"
 apply_log="${audit_dir}/apply.log"
 
+began=$(date -u '+%s')
+echo "${began}" > "${base}/work/main-deploy-began"
+
 if k apply --server-side --field-manager="kaptain/${ENVIRONMENT_TYPE:-}/${ENVIRONMENT:-}" -R -f "${deploy_dir}/" > "${apply_log}" 2>&1; then
-  notify-info "Manifests applied to ${ENVIRONMENT}"
+  took=$(( $(date -u '+%s') - began ))
+  seconds="seconds"
+  if [[ ${took} -eq 1 ]]; then
+    seconds="second"
+  fi
+  notify-info "Main deploy performed in ${took} ${seconds}."
 else
   exit_code=$?
   notify-error "Apply failed for ${ENVIRONMENT} - inspect ${apply_log}"

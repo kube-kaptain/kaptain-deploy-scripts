@@ -70,7 +70,7 @@
 #   Environment current state:
 #     api deployment desires 3, has 2 pods, of which 1 is ready
 #     migrate job is still running
-#   Environment declared stable!
+#   Environment declared stable 42 seconds after main deploy began!
 #
 # Any exit other than 0, 63 or 64 is this script going wrong, not the
 # environment, and deploy says so.
@@ -89,6 +89,7 @@ long_running="${baseline_dir}/long-running"
 new_jobs="${baseline_dir}/new-jobs"
 restart_counts="${baseline_dir}/restart-counts"
 pod_uids="${baseline_dir}/pod-uids"
+main_deploy_began="${base}/work/main-deploy-began"
 purpose="monitor-environment"
 
 # How long to wait for the environment to be stable, and how long it has to
@@ -188,6 +189,11 @@ for needed in "${long_running}" "${new_jobs}" "${restart_counts}" "${pod_uids}";
     exit 1
   fi
 done
+
+if [[ ! -f "${main_deploy_began}" ]]; then
+  notify-error "No record of when the main deploy began, apply-manifests has to run first: ${main_deploy_began}"
+  exit 1
+fi
 
 # "pod" or "pods", "is" or "are", "time" or "times", for the number given
 pods_for() { if [[ "$1" -eq 1 ]]; then printf 'pod'; else printf 'pods'; fi; }
@@ -558,4 +564,9 @@ while true; do
 done
 rm -f "${error_file}"
 
-notify-once "${purpose}" "Environment declared stable!"
+took=$(( now - $(<"${main_deploy_began}") ))
+seconds="seconds"
+if [[ ${took} -eq 1 ]]; then
+  seconds="second"
+fi
+notify-once "${purpose}" "Environment declared stable ${took} ${seconds} after main deploy began!"

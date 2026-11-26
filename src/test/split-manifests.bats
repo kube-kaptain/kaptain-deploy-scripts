@@ -533,6 +533,67 @@ CRDS_STAGE="work/stages/crds"
   [[ "$output" == *"Split has already run in this container, refusing to run it again: ${SELF} exists"* ]]
 }
 
+# Lineage data leaves the sets that are compared with the cluster
+
+write_lineage_data() {
+  local file="${WORK}/$1"
+  mkdir -p "$(dirname "${file}")"
+  printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: lineage-data\ndata:\n  contract.yaml: |\n    version: 1.2.3\n' > "${file}"
+}
+
+@test "split-manifests moves the lineage data of the run-platform's own set to the deploy stage, keeping its path" {
+  write_child_manifest "${SELF_NAME}"
+  write_lineage_data "${SELF_NAME}/kaptain-app-lineage-data.yaml"
+  write_lineage_data "${SELF_NAME}/nested/kaptain-app-lineage-data.yaml"
+  run split-manifests
+  [ "$status" -eq 0 ]
+  [ -f "${DEPLOY}/${SELF_NAME}/kaptain-app-lineage-data.yaml" ]
+  [ -f "${DEPLOY}/${SELF_NAME}/nested/kaptain-app-lineage-data.yaml" ]
+  [ ! -e "${SELF}/kaptain-app-lineage-data.yaml" ]
+  [ ! -e "${SELF}/nested/kaptain-app-lineage-data.yaml" ]
+  [ -f "${SELF}/configmap.yaml" ]
+  [ -f "${WORK}/${SELF_NAME}/kaptain-app-lineage-data.yaml" ]
+  grep -qF "Lineage data: ${SELF_NAME}/kaptain-app-lineage-data.yaml -> stages/deploy/${SELF_NAME}" "${TEST_RUN_BASE}/work/container.log"
+}
+
+@test "split-manifests moves the lineage data of a seeded child to the deploy stage, keeping its path" {
+  write_child_manifest "${SELF_NAME}"
+  write_child_manifest run-env-a
+  mark_child run-env-a
+  write_lineage_data run-env-a/kaptain-app-lineage-data.yaml
+  run split-manifests
+  [ "$status" -eq 0 ]
+  [ -f "${DEPLOY}/run-env-a/kaptain-app-lineage-data.yaml" ]
+  [ ! -e "${SEED}/run-env-a/kaptain-app-lineage-data.yaml" ]
+  [ -f "${SEED}/run-env-a/configmap.yaml" ]
+  [ -f "${WORK}/run-env-a/kaptain-app-lineage-data.yaml" ]
+}
+
+@test "split-manifests moves a file of exactly that name, and no other" {
+  write_child_manifest "${SELF_NAME}"
+  write_lineage_data "${SELF_NAME}/kaptain-app-lineage-data.yaml"
+  write_lineage_data "${SELF_NAME}/kaptain-environment-lineage-data.yaml"
+  write_lineage_data "${SELF_NAME}/kaptain-app-lineage-data-extra.yaml"
+  write_lineage_data "${SELF_NAME}/configmap-lineage-data.yaml"
+  run split-manifests
+  [ "$status" -eq 0 ]
+  [ "$(files_in "${DEPLOY}/${SELF_NAME}")" = "./kaptain-app-lineage-data.yaml" ]
+  [ -f "${SELF}/kaptain-environment-lineage-data.yaml" ]
+  [ -f "${SELF}/kaptain-app-lineage-data-extra.yaml" ]
+  [ -f "${SELF}/configmap-lineage-data.yaml" ]
+}
+
+@test "split-manifests leaves lineage data that is already bound for the deploy stage where it is" {
+  write_child_manifest "${SELF_NAME}"
+  write_child_manifest app-one
+  write_lineage_data app-one/kaptain-app-lineage-data.yaml
+  run split-manifests
+  [ "$status" -eq 0 ]
+  [ -f "${DEPLOY}/app-one/kaptain-app-lineage-data.yaml" ]
+  run grep -F "Lineage data:" "${TEST_RUN_BASE}/work/container.log"
+  [ "$status" -eq 1 ]
+}
+
 @test "split-manifests refuses when the stages dir is already there, changing nothing" {
   write_child_manifest "${SELF_NAME}"
   write_child_manifest app-one

@@ -181,6 +181,27 @@ line_of() {
   grep -qF "INFO: The run-env-child manifests differ from its resources (configmap.yaml missing). Reapplying in full - this will cause a restart of the run-env-child environment control pod." "${TEST_RUN_BASE}/work/notifications.log"
 }
 
+@test "deploy on a run-platform does not reapply its own set or a seed because their lineage data differs, and applies that with everything else" {
+  run_platform_with_one_seed
+  printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: run-platform-test-lineage-data\ndata:\n  contract.yaml: this release\n' \
+    > "${TEST_RUN_BASE}/manifests/run-platform-test/kaptain-app-lineage-data.yaml"
+  printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: run-env-child-lineage-data\ndata:\n  contract.yaml: this release\n' \
+    > "${TEST_RUN_BASE}/manifests/run-env-child/kaptain-app-lineage-data.yaml"
+  cluster_holds "${SELF_SET}/configmap.yaml" "${TEST_RUN_BASE}/manifests/run-platform-test/configmap.yaml"
+  cluster_holds "${SEED_SET}/configmap.yaml" "${TEST_RUN_BASE}/manifests/run-env-child/configmap.yaml"
+  run deploy
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Deployment complete"* ]]
+  [ "$(grep -c -- "-R -f" "${K_LOG}")" -eq 1 ]
+  grep -q -- "-R -f ${STAGED}/" "${K_LOG}"
+  [ -f "${STAGED}/run-platform-test/kaptain-app-lineage-data.yaml" ]
+  [ -f "${STAGED}/run-env-child/kaptain-app-lineage-data.yaml" ]
+  [ ! -e "${SELF_SET}/kaptain-app-lineage-data.yaml" ]
+  [ ! -e "${SEED_SET}/kaptain-app-lineage-data.yaml" ]
+  run grep -F "differ from" "${TEST_RUN_BASE}/work/notifications.log"
+  [ "$status" -eq 1 ]
+}
+
 @test "deploy on a run-platform leaves its own set and its seeds alone when they match the cluster" {
   run_platform_with_one_seed
   cluster_holds "${SELF_SET}/configmap.yaml" "${TEST_RUN_BASE}/manifests/run-platform-test/configmap.yaml"

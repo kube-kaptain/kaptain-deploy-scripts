@@ -33,6 +33,8 @@ setup() {
   : > "${BASELINE}/new-jobs"
   : > "${BASELINE}/restart-counts"
   : > "${BASELINE}/pod-uids"
+  # The main deploy began as the clock starts, unless a test says otherwise
+  echo 1000 > "${TEST_RUN_BASE}/work/main-deploy-began"
   ROUND=1
 }
 
@@ -231,7 +233,7 @@ INFO: Environment current state:
   api deployment desires 3, has 2 pods, of which 1 is ready
 INFO: Environment current state:
   api deployment desires 3, has 3 pods, of which 2 are ready
-INFO: Environment declared stable!" ]
+INFO: Environment declared stable 25 seconds after main deploy began!" ]
   [ "$(sleeps)" = "5 5 5 5 5 " ]
 }
 
@@ -243,8 +245,27 @@ INFO: Environment declared stable!" ]
   run monitor-environment
   [ "$status" -eq 0 ]
   [ "$(<"${SENT}")" = "INFO: Starting stability check for 'run-omg' with timeout of 600 seconds
-INFO: Environment declared stable!" ]
+INFO: Environment declared stable 10 seconds after main deploy began!" ]
   [ "$(sleeps)" = "5 5 " ]
+}
+
+@test "monitor-environment counts the seconds to stable from when the main deploy began, not from when it started watching" {
+  echo 940 > "${TEST_RUN_BASE}/work/main-deploy-began"
+  declared Deployment api
+  controller_says Deployment api 3 3 3 3
+  run monitor-environment
+  [ "$status" -eq 0 ]
+  [ "$(sed -n 2p "${SENT}")" = "INFO: Environment declared stable 70 seconds after main deploy began!" ]
+}
+
+@test "monitor-environment says second, not seconds, for one" {
+  export MONITOR_ENVIRONMENT_SETTLE=0
+  echo 999 > "${TEST_RUN_BASE}/work/main-deploy-began"
+  declared Deployment api
+  controller_says Deployment api 3 3 3 3
+  run monitor-environment
+  [ "$status" -eq 0 ]
+  [ "$(sed -n 2p "${SENT}")" = "INFO: Environment declared stable 1 second after main deploy began!" ]
 }
 
 @test "monitor-environment says a state that lasts once, then how long it lasted ahead of the next" {
@@ -259,7 +280,7 @@ INFO: Environment declared stable!" ]
 INFO: Environment current state:
   api deployment desires 3, has 1 pod, of which 0 are ready
 INFO: Prior message repeated 4 times over 35s
-INFO: Environment declared stable!" ]
+INFO: Environment declared stable 35 seconds after main deploy began!" ]
 }
 
 @test "monitor-environment lists only what is not yet as it should be" {
@@ -571,7 +592,7 @@ INFO: Environment current state:
   migrate job failed but has retries left
 INFO: Environment current state:
   migrate job is still running
-INFO: Environment declared stable!" ]
+INFO: Environment declared stable 25 seconds after main deploy began!" ]
 }
 
 @test "monitor-environment fails at once when a Job has Failed, in the Job's own words" {
@@ -626,7 +647,7 @@ ERROR: Environment not stable:
   [ "$status" -eq 0 ]
   [ "$(sed -n 2,4p "${SENT}")" = "INFO: Environment current state:
   api deployment desires 3, has 2 pods, of which 1 is ready
-INFO: Environment declared stable!" ]
+INFO: Environment declared stable 15 seconds after main deploy began!" ]
   grep -qF "MAIN_DEPLOY_JOB_WAIT is false and Job import is not annotated kaptain.org/main-deploy-job-wait: \"true\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
   grep -qF "MAIN_DEPLOY_JOB_WAIT is false and Job migrate is not annotated kaptain.org/main-deploy-job-wait: \"true\", not waiting for it" "${TEST_RUN_BASE}/work/container.log"
 }
@@ -645,7 +666,7 @@ INFO: Environment declared stable!" ]
   [ "$status" -eq 0 ]
   [ "$(sed -n 2,4p "${SENT}")" = "INFO: Environment current state:
   migrate job is still running
-INFO: Environment declared stable!" ]
+INFO: Environment declared stable 15 seconds after main deploy began!" ]
 }
 
 @test "monitor-environment fails on a failed Job annotated true even when MAIN_DEPLOY_JOB_WAIT is false" {
@@ -723,7 +744,7 @@ ERROR: Environment not stable after 20 seconds. Bailing...
 INFO: Environment current state:
   The state of the environment could not be read
 INFO: Prior message repeated 1 time over 20s
-INFO: Environment declared stable!" ]
+INFO: Environment declared stable 20 seconds after main deploy began!" ]
   grep -qF "Could not read the state of run-omg: Error from server (Forbidden)" "${TEST_RUN_BASE}/work/container.log"
 }
 
@@ -787,6 +808,16 @@ ERROR: Environment not stable after 10 seconds. Bailing...
 }
 
 # Going wrong itself
+
+@test "monitor-environment fails when there is no record of when the main deploy began" {
+  rm "${TEST_RUN_BASE}/work/main-deploy-began"
+  run monitor-environment
+  [ "$status" -ne 0 ]
+  [ "$status" -ne 63 ]
+  [ "$status" -ne 64 ]
+  [[ "$output" == *"No record of when the main deploy began, apply-manifests has to run first"* ]]
+  [ ! -e "${K_LOG}" ]
+}
 
 @test "monitor-environment fails when there is no baseline to hold the environment to" {
   rm "${BASELINE}/restart-counts"

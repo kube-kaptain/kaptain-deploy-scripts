@@ -36,6 +36,10 @@
 #       dry-run nor apply it, so it is taken out of work/manifests as well and
 #       goes through k-<child>-role-binding-only instead.
 #
+# kaptain-app-lineage-data.yaml is moved out of self and each seed into
+# work/stages/deploy/<set>. It changes with every release, so the deploy
+# applies it every time and the compare never sees it.
+#
 # Only a run-platform may bring CRDs or Namespaces. The split does the same on
 # every kind of deploy and leaves the refusing to validate-manifests.
 #
@@ -62,6 +66,7 @@ namespaces_dir="${stages_dir}/namespaces"
 deploy_dir="${stages_dir}/deploy"
 role_binding_dir="${base}/work/child-role-binding"
 marker_name="run-environment-seed-and-compare-marker.yaml"
+lineage_data_name="kaptain-app-lineage-data.yaml"
 
 environment_type="${ENVIRONMENT_TYPE:?ENVIRONMENT_TYPE is required (env or meta-env)}"
 
@@ -165,7 +170,13 @@ for entry in "${work_dir}"/*; do
     # The path within the entry: empty for a lone file, /sub/file.yaml in a dir
     within="${manifest#"${copy}"}"
 
-    if [[ "${kind}" == "CustomResourceDefinition" ]]; then
+    if [[ "${manifest##*/}" == "${lineage_data_name}" && ( "${own}" == "true" || "${marked}" == "true" ) ]]; then
+      # Changes every release: applied by the deploy, never compared
+      moved="${deploy_dir}/${name}${within}"
+      mkdir -p "$(dirname "${moved}")"
+      mv "${manifest}" "${moved}"
+      log "Lineage data: ${name}${within} -> stages/deploy/${name}"
+    elif [[ "${kind}" == "CustomResourceDefinition" ]]; then
       # Same path and file name as in the tree, under the crds stage
       moved="${crds_dir}/${name}${within}"
       mkdir -p "$(dirname "${moved}")"

@@ -181,6 +181,27 @@ line_of() {
   grep -qF "INFO: The run-env-child manifests differ from its resources (configmap.yaml missing). Reapplying in full - this will cause a restart of the run-env-child environment control pod." "${TEST_RUN_BASE}/work/notifications.log"
 }
 
+@test "deploy on a run-platform does not reapply its own set or a seed because their lineage data differs, and applies that with everything else" {
+  run_platform_with_one_seed
+  printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: run-platform-test-lineage-data\ndata:\n  contract.yaml: this release\n' \
+    > "${TEST_RUN_BASE}/manifests/run-platform-test/kaptain-app-lineage-data.yaml"
+  printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: run-env-child-lineage-data\ndata:\n  contract.yaml: this release\n' \
+    > "${TEST_RUN_BASE}/manifests/run-env-child/kaptain-app-lineage-data.yaml"
+  cluster_holds "${SELF_SET}/configmap.yaml" "${TEST_RUN_BASE}/manifests/run-platform-test/configmap.yaml"
+  cluster_holds "${SEED_SET}/configmap.yaml" "${TEST_RUN_BASE}/manifests/run-env-child/configmap.yaml"
+  run deploy
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Deployment complete"* ]]
+  [ "$(grep -c -- "-R -f" "${K_LOG}")" -eq 1 ]
+  grep -q -- "-R -f ${STAGED}/" "${K_LOG}"
+  [ -f "${STAGED}/run-platform-test/kaptain-app-lineage-data.yaml" ]
+  [ -f "${STAGED}/run-env-child/kaptain-app-lineage-data.yaml" ]
+  [ ! -e "${SELF_SET}/kaptain-app-lineage-data.yaml" ]
+  [ ! -e "${SEED_SET}/kaptain-app-lineage-data.yaml" ]
+  run grep -F "differ from" "${TEST_RUN_BASE}/work/notifications.log"
+  [ "$status" -eq 1 ]
+}
+
 @test "deploy on a run-platform leaves its own set and its seeds alone when they match the cluster" {
   run_platform_with_one_seed
   cluster_holds "${SELF_SET}/configmap.yaml" "${TEST_RUN_BASE}/manifests/run-platform-test/configmap.yaml"
@@ -202,7 +223,7 @@ line_of() {
   write_own_workload Deployment "${TEST_RUN_BASE}/previous-deployment.yaml" run-platform-own-aaaaa
   cluster_holds "${SELF_SET}/deployment.yaml" "${TEST_RUN_BASE}/previous-deployment.yaml"
   run deploy
-  [[ "$output" == *"Waiting up to 600s to be replaced by a pod running the reapplied manifests"* ]]
+  [[ "$output" == *"Waiting up to 600 seconds to be replaced by an up-to-date pod from our reapplied manifests"* ]]
   [[ "$output" != *"Deployment complete"* ]]
   grep -q -- "-R -f ${SELF_SET}" "${K_LOG}"
   run grep -- "-R -f ${STAGED}/" "${K_LOG}"
@@ -694,7 +715,7 @@ job_among_the_fixtures() {
   run deploy
   [ "$status" -eq 0 ]
   [[ "$output" == *"Starting stability check for 'run-test-env' with timeout of 600 seconds"* ]]
-  [[ "$output" == *"Environment declared stable!"* ]]
+  [[ "$output" == *"Environment declared stable "*" after main deploy began!"* ]]
   [[ "$output" == *"Deployment complete"* ]]
 }
 
@@ -812,7 +833,7 @@ MOCK
   install_mock_interruptible_sleep_killer  # Need killer to break infinite loop
   export DEPLOY_MODE="deployment"
   run deploy
-  [[ "$output" == *"sleeping forever"* ]]
+  [[ "$output" == *"Deployment complete - sleeping forever to allow operator access..."* ]]
 }
 
 @test "deploy in job mode on error sleeps POST_DEPLOY_SLEEP_FAILURE before exit" {

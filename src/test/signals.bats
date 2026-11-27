@@ -33,7 +33,7 @@ teardown() {
   teardown_test_dirs
 }
 
-@test "deploy initialises PHASE to Pre Validation" {
+@test "deploy initialises PHASE to Pre-validation" {
   # Start deploy and capture early output
   run timeout 2 deploy || true
   # The first notify-info should mention the starting message
@@ -127,4 +127,77 @@ MOCK
 
   # Should exit cleanly (0)
   [ "${exit_code}" -eq 0 ]
+}
+
+@test "deploy says a SIGTERM during the wait after a failure came during that wait, naming the phase that failed, and keeps the failure's exit code" {
+  # Fail early, in an interruptible phase, then really wait so there is time
+  # to be told to stop
+  cat > "${TEST_MOCK_BIN}/prepare-manifests" << 'MOCK'
+#!/usr/bin/env bash
+exit 7
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/prepare-manifests"
+  unset -f interruptible_sleep
+  export POST_DEPLOY_SLEEP_FAILURE=30
+
+  deploy &
+  local deploy_pid=$!
+
+  # Until it says it is waiting after the failure
+  local tries=0
+  until grep -q "Sleeping 30s before exit" "${TEST_RUN_BASE}/work/notifications.log" 2>/dev/null; do
+    tries=$((tries + 1))
+    [ "${tries}" -lt 200 ]
+    sleep 0.1
+  done
+
+  kill -TERM "${deploy_pid}" 2>/dev/null || true
+  local exit_code=0
+  wait "${deploy_pid}" 2>/dev/null || exit_code=$?
+
+  [ "${exit_code}" -eq 7 ]
+  grep -qE "^INFO: SIGTERM received during 'Post-failure wait' \(failed ~[0-9]+ seconds? ago in 'Preparing manifests'\) - shutting down$" "${TEST_RUN_BASE}/work/notifications.log"
+  grep -qF "error during 'Preparing manifests'" "${TEST_RUN_BASE}/work/notifications.log"
+  run grep -F "SIGTERM received during 'Preparing manifests'" "${TEST_RUN_BASE}/work/notifications.log"
+  [ "$status" -eq 1 ]
+}
+
+@test "deploy says a deferred SIGTERM was deferred and is now being respected, once the phase it came in has finished" {
+  # The first step of the uninterruptible apply phase says it has started,
+  # then holds until the test lets it go
+  cat > "${TEST_MOCK_BIN}/apply-jobs" << 'MOCK'
+#!/usr/bin/env bash
+: > "${RUN_BASE_PATH}/work/apply-jobs-started"
+i=0
+while [[ ! -f "${RUN_BASE_PATH}/work/apply-jobs-released" ]] && [[ ${i} -lt 300 ]]; do
+  /bin/sleep 0.1
+  i=$((i + 1))
+done
+MOCK
+  chmod +x "${TEST_MOCK_BIN}/apply-jobs"
+
+  deploy &
+  local deploy_pid=$!
+
+  local i=0
+  while [[ ! -f "${TEST_RUN_BASE}/work/apply-jobs-started" ]] && [[ ${i} -lt 300 ]]; do
+    /bin/sleep 0.1
+    i=$((i + 1))
+  done
+  if [[ ! -f "${TEST_RUN_BASE}/work/apply-jobs-started" ]]; then
+    kill -KILL "${deploy_pid}" 2>/dev/null || true
+    false
+  fi
+
+  # In the apply phase now: this has to be deferred
+  kill -TERM "${deploy_pid}" 2>/dev/null || true
+  /bin/sleep 0.1
+  : > "${TEST_RUN_BASE}/work/apply-jobs-released"
+
+  local exit_code=0
+  wait "${deploy_pid}" 2>/dev/null || exit_code=$?
+
+  [ "${exit_code}" -eq 0 ]
+  grep -qF "INFO: SIGTERM received during 'Applying manifests' - deferring until complete" "${TEST_RUN_BASE}/work/notifications.log"
+  grep -qF "INFO: Shutdown requested during 'Applying manifests' but deferred - now finished and respecting SIGTERM" "${TEST_RUN_BASE}/work/notifications.log"
 }

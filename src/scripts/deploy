@@ -10,9 +10,13 @@ set -euo pipefail
 UNINTERRUPTIBLE=false
 SHUTDOWN_REQUESTED=false
 ERROR_EXIT_CODE=0
-PHASE="Pre Validation"
+PHASE="Pre-validation"
 CHILD_PID=""
 RUN_COMMAND=""
+# Set once a failure has been reported: which phase failed, and when, in
+# seconds since the epoch
+FAILED_PHASE=""
+FAILED_AT=""
 
 # Job mode sleep durations (seconds) - configurable via environment
 POST_DEPLOY_SLEEP_SUCCESS="${POST_DEPLOY_SLEEP_SUCCESS:-600}"    # 10 minutes
@@ -65,9 +69,20 @@ run() {
   return ${rc}
 }
 
+# The phase as a message names it: in quotes, so it is clear which words are
+# the name. During the wait after a failure it also says how long ago that was
+# and which phase it was in.
+phase_named() {
+  if [[ -n "${FAILED_PHASE}" ]]; then
+    printf "'%s' (failed %s in '%s')" "${PHASE}" "$(roughly_ago "$(( $(date -u '+%s') - FAILED_AT ))")" "${FAILED_PHASE}"
+  else
+    printf "'%s'" "${PHASE}"
+  fi
+}
+
 change_phase() {
   if [[ "${SHUTDOWN_REQUESTED}" == "true" ]]; then
-    notify-info "Shutdown requested during ${PHASE} - respecting SIGTERM"
+    notify-info "Shutdown requested during $(phase_named) but deferred - now finished and respecting SIGTERM"
     notify-info "Expect a new environment version to complete deployment"
     exit 0
   fi
@@ -77,10 +92,10 @@ change_phase() {
 
 handle_term() {
   if [[ "${UNINTERRUPTIBLE}" == "true" ]]; then
-    notify-info "SIGTERM received during ${PHASE} - deferring until complete"
+    notify-info "SIGTERM received during $(phase_named) - deferring until complete"
     SHUTDOWN_REQUESTED=true
   else
-    notify-info "SIGTERM received during ${PHASE} - shutting down"
+    notify-info "SIGTERM received during $(phase_named) - shutting down"
     if [[ -n "${CHILD_PID}" ]]; then
       kill -9 "${CHILD_PID}" 2>/dev/null || true
     fi
@@ -91,7 +106,7 @@ trap 'handle_term' TERM
 
 # SIGINT for manual exec-in reruns, not needed for Kube, but should respect Ctrl+C, too
 handle_int() {
-  notify-warning "SIGINT received - operator interference during ${PHASE}"
+  notify-warning "SIGINT received - operator interference during $(phase_named)"
   if [[ -n "${CHILD_PID}" ]]; then
     kill -9 "${CHILD_PID}" 2>/dev/null || true
   fi
@@ -112,7 +127,9 @@ handle_err() {
     error_type="Unexpected"
   fi
 
-  local message="${error_type} error during ${PHASE}
+  local named
+  named=$(phase_named)
+  local message="${error_type} error during ${named}
   Exit code: ${ERROR_EXIT_CODE}
   Line: ${line_no}
   Command: ${command}
@@ -125,6 +142,15 @@ handle_err() {
 Check pod logs for more detail or exec in and inspect the audit directory."
 
   notify-failure "${message}"
+
+  # What follows is the wait for someone to look, not the phase that failed,
+  # and a SIGTERM during it has to say so. Set directly: change_phase would
+  # exit 0 on a pending shutdown, and this has to keep the failure's code.
+  if [[ -z "${FAILED_PHASE}" ]]; then
+    FAILED_PHASE="${PHASE}"
+    FAILED_AT=$(date -u '+%s')
+  fi
+  PHASE="Post-failure wait"
 
   if [[ "${SHUTDOWN_REQUESTED}" == "true" ]]; then
     notify-info "Shutdown already requested - exiting"
@@ -229,7 +255,7 @@ run split-manifests
 if [[ "${ENVIRONMENT_TYPE}" == "meta-env" ]]; then
   change_phase true "Applying CRDs"
   run apply-crds
-  change_phase true "Applying Namespaces"
+  change_phase true "Applying namespaces"
   run apply-namespaces
 fi
 

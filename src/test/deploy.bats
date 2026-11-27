@@ -256,7 +256,7 @@ line_of() {
   cluster_holds "${SELF_SET}/deployment.yaml" "${TEST_RUN_BASE}/previous-deployment.yaml"
   run deploy
   [[ "$output" == *"Reapplied our own manifests 30s ago and this pod has not been replaced"* ]]
-  [[ "$output" == *"Deployment error during Waiting to be replaced"* ]]
+  [[ "$output" == *"Deployment error during 'Waiting to be replaced'"* ]]
   [[ "$output" == *"Exit code: 60"* ]]
   [[ "$output" == *"Sleeping forever for inspection"* ]]
   run grep -- "-R -f ${STAGED}/" "${K_LOG}"
@@ -602,7 +602,7 @@ run_platform_with_a_namespace_only_seed() {
   run deploy
   [ "$status" -ne 0 ]
   [[ "$output" == *"Could not read the pods in run-test-env to record their restart counts"* ]]
-  [[ "$output" == *"Recording the baseline"* ]]
+  [[ "$output" == *"error during 'Recording the baseline'"* ]]
   run grep -- "-R -f" "${K_LOG}"
   [ "$status" -eq 1 ]
 }
@@ -775,7 +775,7 @@ MOCK
   chmod +x "${TEST_MOCK_BIN}/apply-manifests"
   run deploy
   [ "$status" -ne 0 ]
-  grep -q "^FAILURE: Deployment error during Applying manifests" "${TEST_RUN_BASE}/work/notifications.log"
+  grep -q "^FAILURE: Deployment error during 'Applying manifests'" "${TEST_RUN_BASE}/work/notifications.log"
   ! grep -q "^ERROR: Deployment error" "${TEST_RUN_BASE}/work/notifications.log"
   ! grep -q "^SUCCESS:" "${TEST_RUN_BASE}/work/notifications.log"
 }
@@ -789,7 +789,7 @@ MOCK
   run deploy
   [ "$status" -eq 44 ]
   ! grep -q "^INFO: \*Starting" "${TEST_RUN_BASE}/work/notifications.log"
-  grep -q "^FAILURE: Deployment error during Pre Validation" "${TEST_RUN_BASE}/work/notifications.log"
+  grep -q "^FAILURE: Deployment error during 'Pre-validation'" "${TEST_RUN_BASE}/work/notifications.log"
   grep -q "Command: validate-notify" "${TEST_RUN_BASE}/work/notifications.log"
 }
 

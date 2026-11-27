@@ -5,6 +5,33 @@
 # Human-readable timestamp formatting.
 # Sources: do not execute directly.
 
+# How long ago something was, roughly, from the seconds since: the largest
+# whole unit, rounded down. "~42 seconds ago", "~1 hour ago", "~3 days ago"
+roughly_ago() {
+  local seconds="$1"
+  local count
+  local unit
+
+  if [[ ${seconds} -ge 86400 ]]; then
+    count=$(( seconds / 86400 ))
+    unit="day"
+  elif [[ ${seconds} -ge 3600 ]]; then
+    count=$(( seconds / 3600 ))
+    unit="hour"
+  elif [[ ${seconds} -ge 60 ]]; then
+    count=$(( seconds / 60 ))
+    unit="minute"
+  else
+    count="${seconds}"
+    unit="second"
+  fi
+
+  if [[ ${count} -ne 1 ]]; then
+    unit+="s"
+  fi
+  printf '~%s %s ago' "${count}" "${unit}"
+}
+
 # Format current time as human-readable: "14:32:12, 25th Jan 2026 UTC"
 human_timestamp() {
   local day
